@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import https from 'node:https';
-import { BrowserWindow, app, dialog, ipcMain } from 'electron';
+import { BrowserWindow, app, dialog, ipcMain, net } from 'electron';
 
 type DbStorageType = 'json' | 'ldb';
 type EffectiveStorage = 'json' | 'level';
@@ -32,35 +32,118 @@ interface RKeyData {
   expired_time: number;
 }
 
+const RKEY_SERVERS = ['https://llob.linyuchen.net/rkey'];
+
+function normalizeRkey(raw: string | undefined | null): string {
+  if (!raw) return '';
+  let v = raw.trim();
+  v = v.replace(/^&?rkey=/i, '');
+  v = v.replace(/^&/, '');
+  return v;
+}
+
+async function netFetch(url: string, opts?: RequestInit): Promise<Response> {
+  // Electron net.fetch uses Chromium's network stack (same as the browser).
+  // Plain Node fetch (undici) may fail TLS/ALPN against some servers.
+  if (net?.fetch) return net.fetch(url, opts);
+  return fetch(url, opts);
+}
+
 class RKeyManager {
-  private serverUrl: string;
+  private servers: string[];
+  private cachePath: string | null = null;
   private rkeyData: RKeyData = { group_rkey: '', private_rkey: '', expired_time: 0 };
 
-  constructor(serverUrl: string) {
-    this.serverUrl = serverUrl;
+  constructor(servers: string[], opts?: { cachePath?: string }) {
+    this.servers = servers.length > 0 ? servers : RKEY_SERVERS;
+    if (opts?.cachePath) this.cachePath = opts.cachePath;
+    this.loadCache();
   }
 
-  async getRkey(): Promise<RKeyData> {
-    if (this.isExpired()) {
+  private loadCache(): void {
+    if (!this.cachePath) return;
+    try {
+      if (fs.existsSync(this.cachePath)) {
+        const d = JSON.parse(fs.readFileSync(this.cachePath, 'utf-8')) as Partial<RKeyData>;
+        if (d?.group_rkey || d?.private_rkey) {
+          this.rkeyData = {
+            group_rkey: d.group_rkey ?? '',
+            private_rkey: d.private_rkey ?? '',
+            expired_time: d.expired_time ?? 0,
+          };
+          debugLog('[RKeyManager] loaded rkey cache from disk.');
+        }
+      }
+    } catch (e) {
+      debugLog('[RKeyManager] loadCache failed:', e);
+    }
+  }
+
+  private saveCache(): void {
+    if (!this.cachePath) return;
+    try {
+      fs.mkdirSync(path.dirname(this.cachePath), { recursive: true });
+      fs.writeFileSync(this.cachePath, JSON.stringify(this.rkeyData), 'utf-8');
+    } catch (e) {
+      debugLog('[RKeyManager] saveCache failed:', e);
+    }
+  }
+
+  // Feed a valid rkey observed in QQ's own network traffic.
+  capture(groupRkey: string, privateRkey: string, expiredTime = 0): void {
+    let changed = false;
+    if (groupRkey && groupRkey !== this.rkeyData.group_rkey) {
+      this.rkeyData.group_rkey = groupRkey;
+      changed = true;
+    }
+    if (privateRkey && privateRkey !== this.rkeyData.private_rkey) {
+      this.rkeyData.private_rkey = privateRkey;
+      changed = true;
+    }
+    if (expiredTime && this.rkeyData.expired_time !== expiredTime) {
+      this.rkeyData.expired_time = expiredTime;
+      changed = true;
+    }
+    if (changed) this.saveCache();
+  }
+
+  async getRkey(force = false): Promise<RKeyData> {
+    if (force || this.isExpired()) {
       try {
         await this.refreshRkey();
       } catch (e) {
-        console.log('获取 rkey 失败', e);
+        debugLog('[RKeyManager] get rkey failed, keep current cache:', e);
       }
     }
     return this.rkeyData;
   }
 
   private isExpired(): boolean {
+    if (this.rkeyData.expired_time <= 0) return !this.rkeyData.group_rkey && !this.rkeyData.private_rkey;
     return Date.now() / 1000 > this.rkeyData.expired_time;
   }
 
   private async refreshRkey(): Promise<void> {
-    this.rkeyData = await this.fetchServerRkey();
+    for (const server of this.servers) {
+      try {
+        const data = await this.fetchServerRkey(server);
+        this.rkeyData = {
+          group_rkey: normalizeRkey(data.group_rkey),
+          private_rkey: normalizeRkey(data.private_rkey),
+          expired_time: data.expired_time ?? 0,
+        };
+        this.saveCache();
+        debugLog('[RKeyManager] refreshed rkey from server:', server);
+        return;
+      } catch (e) {
+        debugLog('[RKeyManager] server failed:', server, e);
+      }
+    }
+    throw new Error('all rkey servers failed');
   }
 
-  private async fetchServerRkey(): Promise<RKeyData> {
-    const res = await fetch(this.serverUrl);
+  private async fetchServerRkey(server: string): Promise<RKeyData> {
+    const res = await netFetch(server);
     if (!res.ok) throw new Error(res.statusText);
     return (await res.json()) as RKeyData;
   }
@@ -70,7 +153,7 @@ const LEGACY_IMAGE_ORIGIN = 'https://gchat.qpic.cn';
 const NT_IMAGE_ORIGIN = 'https://multimedia.nt.qq.com.cn';
 
 class ImageDownloader {
-  private rkeyManager = new RKeyManager('https://llob.linyuchen.net/rkey');
+  private rkeyManager = new RKeyManager(RKEY_SERVERS, { cachePath: rkeyCachePath });
   private saveToDataDir: string | null = null;
 
   constructor(opts?: { saveToDataDir?: string }) {
@@ -81,7 +164,11 @@ class ImageDownloader {
     this.saveToDataDir = dataDir ? path.join(dataDir, 'images') : null;
   }
 
-  async getImageUrl(picElement: any): Promise<string> {
+  captureRkey(groupRkey: string, privateRkey: string): void {
+    this.rkeyManager.capture(normalizeRkey(groupRkey), normalizeRkey(privateRkey));
+  }
+
+  async getImageUrl(picElement: any, forceRkey = false): Promise<string> {
     if (!picElement) return '';
     const originImageUrl: string | undefined = picElement.originImageUrl;
     const md5HexStr: string | undefined = picElement.md5HexStr;
@@ -92,11 +179,14 @@ class ImageDownloader {
 
       if (appid && ['1406', '1407'].includes(appid)) {
         let rkey = url.searchParams.get('rkey');
-        if (rkey) return NT_IMAGE_ORIGIN + originImageUrl;
+        if (!rkey) {
+          const rkeys = await this.rkeyManager.getRkey(forceRkey);
+          rkey = appid === '1406' ? normalizeRkey(rkeys.private_rkey) : normalizeRkey(rkeys.group_rkey);
+        }
 
-        const rkeys = await this.rkeyManager.getRkey();
-        rkey = appid === '1406' ? rkeys.private_rkey : rkeys.group_rkey;
-        return NT_IMAGE_ORIGIN + originImageUrl + rkey;
+        const target = new URL(NT_IMAGE_ORIGIN + originImageUrl);
+        if (rkey) target.searchParams.set('rkey', rkey);
+        return target.toString();
       }
 
       return LEGACY_IMAGE_ORIGIN + originImageUrl;
@@ -109,17 +199,28 @@ class ImageDownloader {
   }
 
   async downloadPic(msgRecord: any): Promise<void> {
-    if (!Array.isArray(msgRecord?.elements)) return;
+    debugLog('[downloadPic] called. msgId=', msgRecord?.msgId, 'elementsCount=', msgRecord?.elements?.length);
+    if (!Array.isArray(msgRecord?.elements)) {
+      debugLog('[downloadPic] no elements, abort.');
+      return;
+    }
 
     const msgIdStr = String(msgRecord?.msgId ?? '');
 
     for (let idx = 0; idx < msgRecord.elements.length; idx++) {
       const el = msgRecord.elements[idx];
-      if (!el?.picElement) continue;
+      if (!el?.picElement) {
+        debugLog('[downloadPic] element[', idx, '] has no picElement, skip.');
+        continue;
+      }
 
       const pic = el.picElement;
       const sourcePath: string | undefined = pic.sourcePath;
-      if (!sourcePath) continue;
+      debugLog('[downloadPic] element[', idx, '] picElement keys=', Object.keys(pic).join(','), 'sourcePath=', sourcePath);
+      if (!sourcePath) {
+        debugLog('[downloadPic] sourcePath missing, cannot download. pic=', safeStringify(pic));
+        continue;
+      }
 
       const thumbMap = new Map<number, string>([
         [0, sourcePath],
@@ -127,29 +228,57 @@ class ImageDownloader {
         [720, sourcePath],
       ]);
 
-      const url = await this.getImageUrl(pic);
+      let url = await this.getImageUrl(pic);
       this.output('Download lost pic(s)... url=', url, 'msgId=', msgIdStr, 'to=', sourcePath);
+      debugLog('[downloadPic] resolved url=', url, 'msgId=', msgIdStr, 'to=', sourcePath);
 
       let tooSmall = false;
       try {
         tooSmall = fs.statSync(sourcePath).size <= 100;
-      } catch {
-        // ignore
+        debugLog('[downloadPic] sourcePath exists, size=', fs.statSync(sourcePath).size);
+      } catch (e) {
+        debugLog('[downloadPic] statSync(sourcePath) failed: ', e);
       }
 
       if (!fs.existsSync(sourcePath) || tooSmall) {
         this.output('Download pic:', url, ' to ', sourcePath);
-        const data = await this.request(url);
+        debugLog('[downloadPic] need download. exists=', fs.existsSync(sourcePath), 'tooSmall=', tooSmall);
+        let data = await this.request(url);
+        debugLog('[downloadPic] download finished. bytes=', data?.length);
+        let parsed: any = null;
         try {
-          JSON.parse(data.toString());
-          this.output('Picture already expired.', url, sourcePath);
+          parsed = JSON.parse(data.toString());
         } catch {
+          parsed = null;
+        }
+
+        const isRkeyError = parsed && parsed?.retmsg && String(parsed.retmsg).includes('rkey');
+        if (isRkeyError) {
+          debugLog('[downloadPic] got invalid rkey, scrape renderer + force-refresh rkey and retry once. msg=', safeStringify(parsed));
+          await scrapeAllWindowsForRkey();
+          url = await this.getImageUrl(pic, true);
+          debugLog('[downloadPic] retry with url=', url);
+          data = await this.request(url);
+          debugLog('[downloadPic] retry download finished. bytes=', data?.length);
+          try {
+            parsed = JSON.parse(data.toString());
+          } catch {
+            parsed = null;
+          }
+        }
+
+        if (parsed) {
+          this.output('Picture already expired.', url, sourcePath);
+          debugLog('[downloadPic] downloaded body looks like JSON (expired). bytes=', data?.length, 'head=', data.toString('utf8').slice(0, 200));
+        } else {
           fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
           fs.writeFileSync(sourcePath, data);
+          debugLog('[downloadPic] saved to sourcePath. bytes=', data?.length);
           await this.copyToDataDir(data, msgIdStr, sourcePath, idx);
         }
       } else {
         this.output('Pic already existed, skip.', sourcePath);
+        debugLog('[downloadPic] pic already exists, skip download.');
         if (this.saveToDataDir) {
           await this.copyToDataDir(fs.readFileSync(sourcePath), msgIdStr, sourcePath, idx);
         }
@@ -162,7 +291,11 @@ class ImageDownloader {
   }
 
   private async copyToDataDir(data: Buffer, msgId: string, sourcePath: string, idx: number): Promise<void> {
-    if (!this.saveToDataDir) return;
+    debugLog('[copyToDataDir] enter. msgId=', msgId, 'sourcePath=', sourcePath, 'saveToDataDir=', this.saveToDataDir);
+    if (!this.saveToDataDir) {
+      debugLog('[copyToDataDir] saveToDataDir disabled, skip.');
+      return;
+    }
     try {
       fs.mkdirSync(this.saveToDataDir, { recursive: true });
       const ext = path.extname(sourcePath) || '.jpg';
@@ -171,24 +304,32 @@ class ImageDownloader {
       if (!fs.existsSync(out)) {
         fs.writeFileSync(out, data);
         this.output('Saved recalled image to data dir:', out);
+        debugLog('[copyToDataDir] saved to data dir. bytes=', data?.length, 'out=', out);
+      } else {
+        debugLog('[copyToDataDir] target already exists, skip. out=', out);
       }
     } catch (e) {
       this.output('Failed to copy image to data dir:', e);
+      debugLog('[copyToDataDir] FAILED:', e);
     }
   }
 
   private async request(url: string): Promise<Buffer> {
+    debugLog('[request] enter. url=', url);
     return await new Promise((resolve, reject) => {
       const client = url.startsWith('https') ? https : http;
       const req = client.get(url);
 
       req.on('error', err => {
         this.output('Download error', err);
+        debugLog('[request] request error:', err);
         reject(err);
       });
 
       req.on('response', res => {
+        debugLog('[request] response. statusCode=', res.statusCode, 'location=', res.headers.location);
         if (res.statusCode && res.statusCode >= 300 && res.statusCode <= 399 && res.headers.location) {
+          debugLog('[request] redirect to:', res.headers.location);
           resolve(this.request(res.headers.location));
           return;
         }
@@ -196,10 +337,14 @@ class ImageDownloader {
         const chunks: Buffer[] = [];
         res.on('error', err => {
           this.output('Download error', err);
+          debugLog('[request] response error:', err);
           reject(err);
         });
         res.on('data', c => chunks.push(Buffer.from(c)));
-        res.on('end', () => resolve(Buffer.concat(chunks)));
+        res.on('end', () => {
+          debugLog('[request] response end. totalChunks=', chunks.length, 'bytes=', Buffer.concat(chunks).length);
+          resolve(Buffer.concat(chunks));
+        });
       });
     });
   }
@@ -227,9 +372,32 @@ let configPath = '';
 const configDir = getConfigDir();
 const dataDir = getDataDir();
 const imagesDir = path.join(dataDir, 'images');
+const debugLogPath = path.join(dataDir, 'anti-recall-debug.log');
+
+function debugLog(...args: unknown[]): void {
+  try {
+    const ts = new Date().toISOString();
+    const line = `${ts} ${args.map(a => (a instanceof Error ? a.stack ?? String(a) : typeof a === 'string' ? a : safeStringify(a))).join(' ')}\n`;
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.appendFileSync(debugLogPath, line, 'utf-8');
+  } catch {
+    // ignore
+  }
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    const s = JSON.stringify(value);
+    if (s === undefined) return String(value);
+    return s.length > 2000 ? s.slice(0, 2000) + '...' : s;
+  } catch {
+    return String(value);
+  }
+}
 
 const jsonDbPath = path.join(dataDir, 'qq-recalled-db.json');
 const levelDbPath = path.join(dataDir, 'qq-recalled-db.ldb');
+const rkeyCachePath = path.join(dataDir, 'rkey-cache.json');
 
 const imageDownloader = new ImageDownloader();
 
@@ -382,12 +550,88 @@ function broadcast(channel: string): void {
   }
 }
 
+function captureRkeyFromUrls(urls: string[]): void {
+  for (const url of urls ?? []) {
+    try {
+      const u = new URL(url);
+      const rkey = u.searchParams.get('rkey');
+      const appid = u.searchParams.get('appid');
+      if (rkey) {
+        const groupRkey = appid === '1407' ? rkey : '';
+        const privateRkey = appid === '1406' ? rkey : '';
+        imageDownloader.captureRkey(groupRkey, privateRkey);
+        debugLog('[rkey-capture] observed rkey. appid=', appid, 'url=', url);
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function scrapeAllWindowsForRkey(): Promise<void> {
+  for (const win of patchedWindows) {
+    try {
+      if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+      const urls: string[] = await win.webContents.executeJavaScript(
+        `(() => {
+          const out = new Set();
+          const add = (u) => {
+            if (typeof u === 'string' && (u.includes('multimedia.nt.qq.com.cn') || u.includes('gchat.qpic.cn'))) out.add(u);
+          };
+          try {
+            performance.getEntriesByType('resource').forEach((e) => add(e.name));
+          } catch {}
+          try {
+            document.querySelectorAll('img, video, source, [src], [srcset]').forEach((el) => {
+              if (el.currentSrc) add(el.currentSrc);
+              if (el.src) add(el.src);
+              if (el.getAttribute && el.getAttribute('src')) add(el.getAttribute('src'));
+            });
+          } catch {}
+          return Array.from(out).slice(0, 200);
+        })()`,
+      );
+      captureRkeyFromUrls(urls);
+    } catch {
+      // ignore
+    }
+  }
+}
+
 function patchWindow(win: BrowserWindow): void {
   if (!win?.webContents || win.isDestroyed()) return;
   const wc: any = win.webContents;
   if (wc.__antiRecallPatched) return;
   wc.__antiRecallPatched = true;
   patchedWindows.push(win);
+
+  try {
+    const ses = win.webContents.session as any;
+    if (ses && !ses.__antiRecallRkeyHook) {
+      ses.__antiRecallRkeyHook = true;
+      ses.webRequest.onBeforeRequest(
+        { urls: ['https://multimedia.nt.qq.com.cn/*', 'https://gchat.qpic.cn/*'] },
+        (details: any, callback: any) => {
+          captureRkeyFromUrls([details.url]);
+          if (typeof callback === 'function') callback({});
+        },
+      );
+    }
+  } catch (e) {
+    debugLog('[rkey-capture] setup failed:', e);
+  }
+
+  // Scrape valid rkey from the renderer's loaded image URLs (QQ kernel bypasses webRequest).
+  const doScrape = (): void => {
+    void scrapeAllWindowsForRkey();
+  };
+  wc.on('did-finish-load', doScrape);
+  const scrapeTimer = setInterval(doScrape, 10_000);
+  wc.once('destroyed', () => {
+    clearInterval(scrapeTimer);
+    const i = patchedWindows.indexOf(win);
+    if (i !== -1) patchedWindows.splice(i, 1);
+  });
 
   const originalSend: any = wc.__qqntim_original_object?.send ?? wc.send.bind(wc);
 
