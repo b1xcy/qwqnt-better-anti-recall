@@ -27,7 +27,7 @@ const configs = {
 
     plugins: [
       viteOxlint({
-        includes: ['src/**/*.js', 'src/**/*.ts'],
+        includes: ['src/**/*.ts'],
         fix: true,
       }),
     ],
@@ -55,7 +55,7 @@ const configs = {
 
     plugins: [
       viteOxlint({
-        includes: ['src/**/*.js', 'src/**/*.ts'],
+        includes: ['src/**/*.ts'],
         fix: true,
       }),
     ],
@@ -78,7 +78,7 @@ const configs = {
 
     plugins: [
       viteOxlint({
-        includes: ['src/**/*.js', 'src/**/*.ts'],
+        includes: ['src/**/*.ts'],
         fix: true,
       }),
       viteCp({

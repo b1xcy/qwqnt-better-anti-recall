@@ -12,6 +12,9 @@ interface AntiRecallConfig {
   enablePeriodicCleanup: boolean;
   maxMsgSaveLimit: number;
   deleteMsgCountPerTime: number;
+  enableNapcatRkey: boolean;
+  napcatRkeyUrl: string;
+  napcatRkeyToken: string;
 }
 
 const packageJson = {
@@ -32,12 +35,15 @@ const DEFAULT_CONFIG: AntiRecallConfig = {
   enablePeriodicCleanup: true,
   maxMsgSaveLimit: 10_000,
   deleteMsgCountPerTime: 500,
+  enableNapcatRkey: false,
+  napcatRkeyUrl: '',
+  napcatRkeyToken: '',
 };
 
 let recalledIds: string[] = [];
 let currentConfig: AntiRecallConfig = { ...DEFAULT_CONFIG };
 
-function waitForHakoGlobals(): void {
+function waitForHakoGlobals (): void {
   const hasRendererEvents = typeof (globalThis as any).RendererEvents !== 'undefined';
   const hasPluginSettings = typeof (globalThis as any).PluginSettings !== 'undefined';
 
@@ -54,7 +60,7 @@ function waitForHakoGlobals(): void {
 waitForHakoGlobals();
 void setupMainWindowPatches();
 
-async function getNowConfig(): Promise<AntiRecallConfig> {
+async function getNowConfig (): Promise<AntiRecallConfig> {
   try {
     const cfg = await window.anti_recall?.getNowConfig<AntiRecallConfig>();
     return cfg ?? { ...DEFAULT_CONFIG };
@@ -63,7 +69,7 @@ async function getNowConfig(): Promise<AntiRecallConfig> {
   }
 }
 
-async function registerSettingsPage(): Promise<void> {
+async function registerSettingsPage (): Promise<void> {
   try {
     const view = await PluginSettings.renderer.registerPluginSettings(packageJson);
     await renderSettings(view);
@@ -72,11 +78,11 @@ async function registerSettingsPage(): Promise<void> {
   }
 }
 
-function setSwitchActive(el: HTMLElement, active: boolean): void {
+function setSwitchActive (el: HTMLElement, active: boolean): void {
   el.classList.toggle('is-active', active);
 }
 
-async function renderSettings(container: HTMLDivElement): Promise<void> {
+async function renderSettings (container: HTMLDivElement): Promise<void> {
   currentConfig = await getNowConfig();
 
   const html = `
@@ -163,6 +169,39 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
                   </div>
                 </setting-item>
               </div>
+            </setting-list>
+          </setting-panel>
+        </setting-section>
+
+        <setting-section data-title="RKey 获取">
+          <setting-panel>
+            <setting-list data-direction="column">
+              <setting-item data-direction="row">
+                <div style="width:90%;">
+                  <setting-text>从 NapCat 获取 RKey</setting-text>
+                  <span class="secondary-text">开启后优先从 NapCat WebUI 的 nc_get_rkey 接口获取 RKey；失败时回退到外部服务器和网络抓取。</span>
+                </div>
+                <div id="switchNapcatRkey" class="q-switch">
+                  <span class="q-switch__handle"></span>
+                </div>
+              </setting-item>
+
+              <setting-item id="napcatRkeyCfg" data-direction="column" class="hidden">
+                <div class="vertical-list-item">
+                  <div style="width:90%;">
+                    <h2>NapCat WebUI 地址</h2>
+                    <span class="secondary-text">NapCat WebUI 访问地址，如 http://127.0.0.1:6099</span>
+                  </div>
+                  <input id="napcatRkeyUrl" class="text_color path-input" style="width:50%;" type="text" placeholder="http://127.0.0.1:6099" value="${currentConfig.napcatRkeyUrl ?? ''}"/>
+                </div>
+                <div class="vertical-list-item">
+                  <div style="width:90%;">
+                    <h2>WebUI Token</h2>
+                    <span class="secondary-text">NapCat WebUI 的登录 token（设置-网络配置 中的 WebUI token）</span>
+                  </div>
+                  <input id="napcatRkeyToken" class="text_color path-input" style="width:50%;" type="password" value="${currentConfig.napcatRkeyToken ?? ''}"/>
+                </div>
+              </setting-item>
             </setting-list>
           </setting-panel>
         </setting-section>
@@ -325,6 +364,32 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
     });
   }
 
+  const switchNapcatRkey = menu.querySelector<HTMLElement>('#switchNapcatRkey');
+  const napcatRkeyCfg = menu.querySelector<HTMLElement>('#napcatRkeyCfg');
+  if (switchNapcatRkey && napcatRkeyCfg) {
+    setSwitchActive(switchNapcatRkey, currentConfig.enableNapcatRkey === true);
+    napcatRkeyCfg.classList.toggle('hidden', currentConfig.enableNapcatRkey !== true);
+    switchNapcatRkey.addEventListener('click', async () => {
+      const next = !switchNapcatRkey.classList.contains('is-active');
+      setSwitchActive(switchNapcatRkey, next);
+      currentConfig.enableNapcatRkey = next;
+      napcatRkeyCfg.classList.toggle('hidden', !next);
+      await window.anti_recall.saveConfig(currentConfig);
+    });
+  }
+
+  const napcatRkeyUrlInput = menu.querySelector<HTMLInputElement>('#napcatRkeyUrl');
+  napcatRkeyUrlInput?.addEventListener('blur', async () => {
+    currentConfig.napcatRkeyUrl = napcatRkeyUrlInput.value.trim();
+    await window.anti_recall.saveConfig(currentConfig);
+  });
+
+  const napcatRkeyTokenInput = menu.querySelector<HTMLInputElement>('#napcatRkeyToken');
+  napcatRkeyTokenInput?.addEventListener('blur', async () => {
+    currentConfig.napcatRkeyToken = napcatRkeyTokenInput.value.trim();
+    await window.anti_recall.saveConfig(currentConfig);
+  });
+
   const switchShadow = menu.querySelector<HTMLElement>('#switchShadow');
   if (switchShadow) {
     setSwitchActive(switchShadow, currentConfig.enableShadow !== false);
@@ -350,7 +415,7 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
   container.appendChild(menu);
 }
 
-async function refreshStorageStatus(menu: Element): Promise<void> {
+async function refreshStorageStatus (menu: Element): Promise<void> {
   const statusEl = menu.querySelector<HTMLElement>('#storageStatus');
   if (!statusEl) return;
   if (!window.anti_recall?.getStorageStatus) {
@@ -384,7 +449,7 @@ async function refreshStorageStatus(menu: Element): Promise<void> {
   }
 }
 
-async function applyCssFromConfig(): Promise<void> {
+async function applyCssFromConfig (): Promise<void> {
   currentConfig = await getNowConfig();
 
   const old = document.querySelector<HTMLStyleElement>('#anti-recall-css');
@@ -457,7 +522,7 @@ async function applyCssFromConfig(): Promise<void> {
   document.head.appendChild(style);
 }
 
-async function setupMainWindowPatches(): Promise<void> {
+async function setupMainWindowPatches (): Promise<void> {
   if (!window.anti_recall) return;
 
   window.anti_recall.repatchCss(() => {
@@ -500,7 +565,7 @@ async function setupMainWindowPatches(): Promise<void> {
   }, 100);
 }
 
-async function markRecalledInView(): Promise<void> {
+async function markRecalledInView (): Promise<void> {
   const nodes = document.querySelector('.chat-msg-area__vlist')?.querySelectorAll<HTMLElement>('.ml-item');
   if (!nodes) return;
 
@@ -541,7 +606,7 @@ async function markRecalledInView(): Promise<void> {
   }
 }
 
-async function markRecalledById(msgId: string): Promise<void> {
+async function markRecalledById (msgId: string): Promise<void> {
   const t = document.getElementById(`${msgId}-msgContainerMsgContent`);
   const p = document.getElementById(`${msgId}-msgContent`);
   const r = document.getElementById(`ml-${msgId}`)?.querySelector<HTMLElement>('.msg-content-container');
@@ -576,7 +641,7 @@ async function markRecalledById(msgId: string): Promise<void> {
   if (bySelector) await markRecalled(bySelector);
 }
 
-async function markRecalled(container: HTMLElement): Promise<void> {
+async function markRecalled (container: HTMLElement): Promise<void> {
   if (!container) return;
 
   const existing = container.querySelector('.message-content-recalled');
