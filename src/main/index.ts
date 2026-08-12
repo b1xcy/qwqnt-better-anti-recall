@@ -145,6 +145,29 @@ class RKeyManager {
     };
   }
 
+  // 用给定地址/token 测试 NapCat 源(不改变实例状态)
+  async testNapcatSource (url: string, token: string): Promise<{ ok: boolean; data?: RKeyData; error?: string }> {
+    const trimmed = url.trim().replace(/\/+$/, '');
+    if (!trimmed) return { ok: false, error: 'NapCat 地址不能为空' };
+    if (!token) return { ok: false, error: 'WebUI Token 不能为空' };
+    const prevSource = this.napcatSource;
+    const prevCredential = this.napcatCredential;
+    const prevCredentialExpire = this.napcatCredentialExpire;
+    this.napcatSource = { url: trimmed, token };
+    this.napcatCredential = null;
+    this.napcatCredentialExpire = 0;
+    try {
+      const data = await this.fetchNapcatRkey();
+      return { ok: true, data };
+    } catch (e) {
+      return { ok: false, error: (e as Error)?.message ?? String(e) };
+    } finally {
+      this.napcatSource = prevSource;
+      this.napcatCredential = prevCredential;
+      this.napcatCredentialExpire = prevCredentialExpire;
+    }
+  }
+
   private loadCache (): void {
     if (!this.cachePath) return;
     try {
@@ -263,6 +286,10 @@ class ImageDownloader {
 
   setNapcatSource (url: string, token: string): void {
     this.rkeyManager.setNapcatSource(url, token);
+  }
+
+  async testNapcatRkey (url: string, token: string): Promise<{ ok: boolean; data?: RKeyData; error?: string }> {
+    return await this.rkeyManager.testNapcatSource(url, token);
   }
 
   captureRkey (groupRkey: string, privateRkey: string): void {
@@ -926,6 +953,10 @@ function registerIpcHandlers (): void {
     broadcast('LiteLoader.anti_recall.mainWindow.repatchCss');
 
     fs.writeFileSync(configPath, JSON.stringify(newConfig, null, 2), 'utf-8');
+  });
+
+  ipcMain.handle('LiteLoader.anti_recall.testNapcatRkey', async (_event, url: string, token: string) => {
+    return await imageDownloader.testNapcatRkey(url, token);
   });
 
   ipcMain.handle('LiteLoader.anti_recall.clearDb', async () => {

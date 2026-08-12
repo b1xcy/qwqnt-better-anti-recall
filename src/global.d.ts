@@ -45,6 +45,11 @@ declare global {
       getNowConfig: <T = unknown>() => Promise<T>;
       getStorageStatus: () => Promise<{ effective: 'json' | 'level'; requested: 'json' | 'ldb'; error?: string }>;
       saveConfig: <T = unknown>(newConfig: T) => Promise<void>;
+      testNapcatRkey: (url: string, token: string) => Promise<{
+        ok: boolean;
+        data?: { group_rkey: string; private_rkey: string; expired_time: number };
+        error?: string;
+      }>;
       repatchCss: (callback: () => void) => void;
       recallTip: (callback: (_event: unknown, msgId: string) => void) => void;
       recallTipList: (callback: (_event: unknown, msgIds: string[]) => void) => void;

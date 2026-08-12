@@ -187,19 +187,21 @@ async function renderSettings (container: HTMLDivElement): Promise<void> {
               </setting-item>
 
               <setting-item id="napcatRkeyCfg" data-direction="column" class="hidden">
-                <div class="vertical-list-item">
-                  <div style="width:90%;">
-                    <h2>NapCat WebUI 地址</h2>
-                    <span class="secondary-text">NapCat WebUI 访问地址，如 http://127.0.0.1:6099</span>
+                <div class="anti-recall-rkey">
+                  <div class="anti-recall-rkey__field">
+                    <label for="napcatRkeyUrl">NapCat WebUI 地址</label>
+                    <span class="anti-recall-rkey__field-hint">NapCat WebUI 访问地址，如 http://127.0.0.1:6099</span>
+                    <input id="napcatRkeyUrl" class="anti-recall-rkey__input" type="text" placeholder="http://127.0.0.1:6099" value="${currentConfig.napcatRkeyUrl ?? ''}"/>
                   </div>
-                  <input id="napcatRkeyUrl" class="text_color path-input" style="width:50%;" type="text" placeholder="http://127.0.0.1:6099" value="${currentConfig.napcatRkeyUrl ?? ''}"/>
-                </div>
-                <div class="vertical-list-item">
-                  <div style="width:90%;">
-                    <h2>WebUI Token</h2>
-                    <span class="secondary-text">NapCat WebUI 的登录 token（设置-网络配置 中的 WebUI token）</span>
+                  <div class="anti-recall-rkey__field">
+                    <label for="napcatRkeyToken">WebUI Token</label>
+                    <span class="anti-recall-rkey__field-hint">NapCat WebUI 的登录 token（设置-网络配置 中的 WebUI token）</span>
+                    <input id="napcatRkeyToken" class="anti-recall-rkey__input" type="password" value="${currentConfig.napcatRkeyToken ?? ''}"/>
                   </div>
-                  <input id="napcatRkeyToken" class="text_color path-input" style="width:50%;" type="password" value="${currentConfig.napcatRkeyToken ?? ''}"/>
+                  <div class="anti-recall-rkey__actions">
+                    <button id="testNapcatRkey" class="anti-recall-rkey__button" type="button">测试连接</button>
+                    <span id="napcatRkeyTestResult" class="anti-recall-rkey__result" hidden></span>
+                  </div>
                 </div>
               </setting-item>
             </setting-list>
@@ -255,6 +257,82 @@ async function renderSettings (container: HTMLDivElement): Promise<void> {
           .config_view .hidden { display: none !important; }
           .config_view .periodic-cleanup-sub.hidden { display: none !important; }
           .config_view .secondary-text { color: var(--text_secondary); font-size: min(var(--font_size_2), 16px); line-height: min(var(--line_height_2), 22px); margin-top: 4px; }
+          .anti-recall-rkey * { box-sizing: border-box; }
+          .anti-recall-rkey__field { margin-top: 14px; }
+          .anti-recall-rkey__field:first-child { margin-top: 0; }
+          .anti-recall-rkey__field > label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            line-height: 20px;
+            margin-bottom: 2px;
+          }
+          .anti-recall-rkey__field-hint {
+            color: var(--text_secondary, #72777f);
+            display: block;
+            font-size: 12px;
+            line-height: 18px;
+            margin-bottom: 7px;
+            overflow-wrap: anywhere;
+          }
+          .anti-recall-rkey__input {
+            background: var(--fill_light_primary, var(--bg_bottom_standard, #fff));
+            border: 1px solid var(--fill_standard_primary, rgba(127, 127, 127, .22));
+            border-radius: 6px;
+            color: var(--text_primary, #202124);
+            font: inherit;
+            height: 34px;
+            outline: none;
+            padding: 0 10px;
+            width: 100%;
+          }
+          .anti-recall-rkey__input::placeholder { color: var(--text_secondary, #8a8f98); }
+          .anti-recall-rkey__input:focus {
+            border-color: var(--brand_standard, #1478ff);
+            box-shadow: 0 0 0 1px var(--brand_standard, #1478ff);
+          }
+          .anti-recall-rkey__input:disabled { opacity: .5; }
+          .anti-recall-rkey__actions {
+            align-items: center;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 16px;
+            min-height: 34px;
+          }
+          .anti-recall-rkey__button {
+            align-items: center;
+            background: var(--fill_standard_secondary, rgba(127, 127, 127, .09));
+            border: 1px solid var(--fill_standard_primary, rgba(127, 127, 127, .18));
+            border-radius: 6px;
+            color: var(--text_primary, #202124);
+            cursor: pointer;
+            display: inline-flex;
+            font: inherit;
+            gap: 7px;
+            height: 34px;
+            justify-content: center;
+            line-height: 20px;
+            padding: 0 12px;
+            transition: background-color .14s ease, border-color .14s ease, color .14s ease;
+            white-space: nowrap;
+          }
+          .anti-recall-rkey__button:hover:not(:disabled) { background: var(--overlay_hover, rgba(127, 127, 127, .14)); }
+          .anti-recall-rkey__button:active:not(:disabled) { background: var(--overlay_pressed, rgba(127, 127, 127, .2)); }
+          .anti-recall-rkey__button:focus-visible {
+            outline: 2px solid var(--brand_standard, #1478ff);
+            outline-offset: 2px;
+          }
+          .anti-recall-rkey__button:disabled { cursor: default; opacity: .42; }
+          .anti-recall-rkey__result {
+            color: var(--text_secondary, #72777f);
+            font-size: 12px;
+            line-height: 18px;
+            overflow-wrap: anywhere;
+          }
+          .anti-recall-rkey__result[hidden] { display: none; }
+          .anti-recall-rkey__result--ok { color: #23834f; }
+          .anti-recall-rkey__result--error { color: var(--text_error, #c73a36); }
           @media (prefers-color-scheme: light) { .text_color { color: black; } }
           @media (prefers-color-scheme: dark) { .text_color { color: white; } }
         </style>
@@ -389,6 +467,39 @@ async function renderSettings (container: HTMLDivElement): Promise<void> {
     currentConfig.napcatRkeyToken = napcatRkeyTokenInput.value.trim();
     await window.anti_recall.saveConfig(currentConfig);
   });
+
+  const testNapcatBtn = menu.querySelector<HTMLButtonElement>('#testNapcatRkey');
+  const testNapcatResult = menu.querySelector<HTMLElement>('#napcatRkeyTestResult');
+  if (testNapcatBtn && testNapcatResult) {
+    testNapcatBtn.addEventListener('click', async () => {
+      const url = napcatRkeyUrlInput?.value.trim() ?? '';
+      const token = napcatRkeyTokenInput?.value.trim() ?? '';
+      testNapcatBtn.disabled = true;
+      testNapcatResult.hidden = false;
+      testNapcatResult.className = 'anti-recall-rkey__result';
+      testNapcatResult.textContent = '测试中...';
+      try {
+        const ret = await window.anti_recall.testNapcatRkey(url, token);
+        console.log('[Anti-Recall] napcat rkey test result:', ret);
+        if (ret.ok && ret.data) {
+          const d = ret.data;
+          const expire = new Date(d.expired_time * 1000).toLocaleString();
+          testNapcatResult.classList.add('anti-recall-rkey__result--ok');
+          testNapcatResult.textContent =
+            `连接成功 ✓ private: ${d.private_rkey} | group: ${d.group_rkey} | 过期: ${expire}`;
+        } else {
+          testNapcatResult.classList.add('anti-recall-rkey__result--error');
+          testNapcatResult.textContent = `测试失败: ${ret.error ?? '未知错误'}`;
+        }
+      } catch (e) {
+        console.error('[Anti-Recall] napcat rkey test error:', e);
+        testNapcatResult.classList.add('anti-recall-rkey__result--error');
+        testNapcatResult.textContent = `测试异常: ${String(e)}`;
+      } finally {
+        testNapcatBtn.disabled = false;
+      }
+    });
+  }
 
   const switchShadow = menu.querySelector<HTMLElement>('#switchShadow');
   if (switchShadow) {

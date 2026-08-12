@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('anti_recall', {
   getNowConfig: () => ipcRenderer.invoke('LiteLoader.anti_recall.getNowConfig'),
   getStorageStatus: () => ipcRenderer.invoke('LiteLoader.anti_recall.getStorageStatus'),
   saveConfig: (newConfig: unknown) => ipcRenderer.invoke('LiteLoader.anti_recall.saveConfig', newConfig),
+  testNapcatRkey: (url: string, token: string) =>
+    ipcRenderer.invoke('LiteLoader.anti_recall.testNapcatRkey', url, token),
 
   repatchCss: (callback: () => void) => ipcRenderer.on('LiteLoader.anti_recall.mainWindow.repatchCss', callback),
   recallTip: (callback: (_event: unknown, msgId: string) => void) =>
