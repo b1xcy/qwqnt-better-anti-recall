@@ -1,0 +1,52 @@
+name: Build Plugin
+
+on:
+  push:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build qwqnt-anti-recall.zip
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      # 防御性清理：若 @electron/rebuild 在 CI 上把平台专用的 leveldown 二进制
+      # 编进 node_modules/leveldown/build，node-gyp-build 运行时会优先加载
+      # build/Release 且不校验平台，导致其他平台加载失败。删掉后由 leveldown
+      # 自带的全平台 N-API prebuilds 接管，zip 在 Windows / macOS / Linux 均可用。
+      # 若 zip 中无此目录（rebuild 未产出），zip -d 返回非零，忽略即可。
+      - name: Strip CI-specific native binary from zip
+        run: zip -d qwqnt-anti-recall.zip 'node_modules/leveldown/build/*' 'node_modules/leveldown/build/*/*' || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwqnt-anti-recall
+          path: qwqnt-anti-recall.zip
+          if-no-files-found: error
