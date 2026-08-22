@@ -1,12 +1,12 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import http from 'node:http';
-import https from 'node:https';
-import crypto from 'node:crypto';
-import { BrowserWindow, app, dialog, ipcMain, net } from 'electron';
+import fs from "node:fs";
+import path from "node:path";
+import http from "node:http";
+import https from "node:https";
+import crypto from "node:crypto";
+import { BrowserWindow, app, dialog, ipcMain, net } from "electron";
 
-type DbStorageType = 'json' | 'ldb';
-type EffectiveStorage = 'json' | 'level';
+type DbStorageType = "json" | "ldb";
+type EffectiveStorage = "json" | "level";
 
 interface AntiRecallConfig {
   mainColor: string;
@@ -36,17 +36,17 @@ interface RKeyData {
   expired_time: number;
 }
 
-const RKEY_SERVERS = ['https://llob.linyuchen.net/rkey'];
+const RKEY_SERVERS = ["https://llob.linyuchen.net/rkey"];
 
-function normalizeRkey (raw: string | undefined | null): string {
-  if (!raw) return '';
+function normalizeRkey(raw: string | undefined | null): string {
+  if (!raw) return "";
   let v = raw.trim();
-  v = v.replace(/^&?rkey=/i, '');
-  v = v.replace(/^&/, '');
+  v = v.replace(/^&?rkey=/i, "");
+  v = v.replace(/^&/, "");
   return v;
 }
 
-async function netFetch (url: string, opts?: RequestInit): Promise<Response> {
+async function netFetch(url: string, opts?: RequestInit): Promise<Response> {
   // Electron net.fetch uses Chromium's network stack (same as the browser).
   // Plain Node fetch (undici) may fail TLS/ALPN against some servers.
   if (net?.fetch) return net.fetch(url, opts);
@@ -56,51 +56,62 @@ async function netFetch (url: string, opts?: RequestInit): Promise<Response> {
 class RKeyManager {
   private servers: string[];
   private cachePath: string | null = null;
-  private rkeyData: RKeyData = { group_rkey: '', private_rkey: '', expired_time: 0 };
+  private rkeyData: RKeyData = {
+    group_rkey: "",
+    private_rkey: "",
+    expired_time: 0,
+  };
   private napcatSource: { url: string; token: string } | null = null;
   private napcatCredential: string | null = null;
   private napcatCredentialExpire: number = 0;
   private readonly NAPCAT_CREDENTIAL_TTL = 3600; // WebUI Credential 有效期 1 小时
 
-  constructor (servers: string[], opts?: { cachePath?: string }) {
+  constructor(servers: string[], opts?: { cachePath?: string }) {
     this.servers = servers.length > 0 ? servers : RKEY_SERVERS;
     if (opts?.cachePath) this.cachePath = opts.cachePath;
     this.loadCache();
   }
 
-  setNapcatSource (url: string, token: string): void {
-    const trimmed = url.trim().replace(/\/+$/, '');
+  setNapcatSource(url: string, token: string): void {
+    const trimmed = url.trim().replace(/\/+$/, "");
     this.napcatSource = trimmed && token ? { url: trimmed, token } : null;
     if (this.napcatSource) {
-      debugLog('[RKeyManager] napcat source set:', this.napcatSource.url);
+      debugLog("[RKeyManager] napcat source set:", this.napcatSource.url);
     } else {
-      debugLog('[RKeyManager] napcat source disabled');
+      debugLog("[RKeyManager] napcat source disabled");
     }
   }
 
   // 登录 NapCat WebUI,换取 1 小时有效的 Credential
-  private async napcatLogin (): Promise<string> {
+  private async napcatLogin(): Promise<string> {
     const src = this.napcatSource;
-    if (!src) throw new Error('napcat source not configured');
-    const hash = crypto.createHash('sha256').update(src.token + '.napcat').digest().toString('hex');
+    if (!src) throw new Error("napcat source not configured");
+    const hash = crypto
+      .createHash("sha256")
+      .update(src.token + ".napcat")
+      .digest()
+      .toString("hex");
     const res = await netFetch(`${src.url}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ hash }),
     });
-    if (!res.ok) throw new Error(`napcat login http ${res.status} ${res.statusText}`);
+    if (!res.ok)
+      throw new Error(`napcat login http ${res.status} ${res.statusText}`);
     const body = (await res.json()) as any;
     const credential = body?.data?.Credential;
-    if (!credential) throw new Error(`napcat login failed: ${safeStringify(body)}`);
+    if (!credential)
+      throw new Error(`napcat login failed: ${safeStringify(body)}`);
     this.napcatCredential = credential;
-    this.napcatCredentialExpire = Date.now() / 1000 + this.NAPCAT_CREDENTIAL_TTL;
-    debugLog('[RKeyManager] napcat login ok');
+    this.napcatCredentialExpire =
+      Date.now() / 1000 + this.NAPCAT_CREDENTIAL_TTL;
+    debugLog("[RKeyManager] napcat login ok");
     return credential;
   }
 
-  private async fetchNapcatRkey (): Promise<RKeyData> {
+  private async fetchNapcatRkey(): Promise<RKeyData> {
     const src = this.napcatSource;
-    if (!src) throw new Error('napcat source not configured');
+    if (!src) throw new Error("napcat source not configured");
 
     // Credential 失效时重新登录
     let credential = this.napcatCredential;
@@ -109,14 +120,15 @@ class RKeyManager {
     }
 
     const res = await netFetch(`${src.url}/api/Debug/call`, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
         Authorization: `Bearer ${credential}`,
       },
-      body: JSON.stringify({ action: 'nc_get_rkey', params: {} }),
+      body: JSON.stringify({ action: "nc_get_rkey", params: {} }),
     });
-    if (!res.ok) throw new Error(`napcat call http ${res.status} ${res.statusText}`);
+    if (!res.ok)
+      throw new Error(`napcat call http ${res.status} ${res.statusText}`);
     const body = (await res.json()) as any;
 
     // 实测结构: { code, data: { status, retcode, data: [{rkey, ttl, time, type}], ... }, message }
@@ -125,7 +137,9 @@ class RKeyManager {
     let list = ob11?.data;
     if (!Array.isArray(list)) list = body?.data;
     if (!Array.isArray(list) || list.length === 0) {
-      throw new Error(`napcat nc_get_rkey 返回中没有 rkeyList: ${safeStringify(body)}`);
+      throw new Error(
+        `napcat nc_get_rkey 返回中没有 rkeyList: ${safeStringify(body)}`,
+      );
     }
 
     const privateItem = list.find((i: any) => i.type === 10);
@@ -136,7 +150,7 @@ class RKeyManager {
 
     const expired = Math.min(
       Number(privateItem.time) + Number(privateItem.ttl),
-      Number(groupItem.time) + Number(groupItem.ttl)
+      Number(groupItem.time) + Number(groupItem.ttl),
     );
     return {
       group_rkey: normalizeRkey(groupItem.rkey),
@@ -146,10 +160,13 @@ class RKeyManager {
   }
 
   // 用给定地址/token 测试 NapCat 源(不改变实例状态)
-  async testNapcatSource (url: string, token: string): Promise<{ ok: boolean; data?: RKeyData; error?: string }> {
-    const trimmed = url.trim().replace(/\/+$/, '');
-    if (!trimmed) return { ok: false, error: 'NapCat 地址不能为空' };
-    if (!token) return { ok: false, error: 'WebUI Token 不能为空' };
+  async testNapcatSource(
+    url: string,
+    token: string,
+  ): Promise<{ ok: boolean; data?: RKeyData; error?: string }> {
+    const trimmed = url.trim().replace(/\/+$/, "");
+    if (!trimmed) return { ok: false, error: "NapCat 地址不能为空" };
+    if (!token) return { ok: false, error: "WebUI Token 不能为空" };
     const prevSource = this.napcatSource;
     const prevCredential = this.napcatCredential;
     const prevCredentialExpire = this.napcatCredentialExpire;
@@ -168,37 +185,39 @@ class RKeyManager {
     }
   }
 
-  private loadCache (): void {
+  private loadCache(): void {
     if (!this.cachePath) return;
     try {
       if (fs.existsSync(this.cachePath)) {
-        const d = JSON.parse(fs.readFileSync(this.cachePath, 'utf-8')) as Partial<RKeyData>;
+        const d = JSON.parse(
+          fs.readFileSync(this.cachePath, "utf-8"),
+        ) as Partial<RKeyData>;
         if (d?.group_rkey || d?.private_rkey) {
           this.rkeyData = {
-            group_rkey: d.group_rkey ?? '',
-            private_rkey: d.private_rkey ?? '',
+            group_rkey: d.group_rkey ?? "",
+            private_rkey: d.private_rkey ?? "",
             expired_time: d.expired_time ?? 0,
           };
-          debugLog('[RKeyManager] loaded rkey cache from disk.');
+          debugLog("[RKeyManager] loaded rkey cache from disk.");
         }
       }
     } catch (e) {
-      debugLog('[RKeyManager] loadCache failed:', e);
+      debugLog("[RKeyManager] loadCache failed:", e);
     }
   }
 
-  private saveCache (): void {
+  private saveCache(): void {
     if (!this.cachePath) return;
     try {
       fs.mkdirSync(path.dirname(this.cachePath), { recursive: true });
-      fs.writeFileSync(this.cachePath, JSON.stringify(this.rkeyData), 'utf-8');
+      fs.writeFileSync(this.cachePath, JSON.stringify(this.rkeyData), "utf-8");
     } catch (e) {
-      debugLog('[RKeyManager] saveCache failed:', e);
+      debugLog("[RKeyManager] saveCache failed:", e);
     }
   }
 
   // Feed a valid rkey observed in QQ's own network traffic.
-  capture (groupRkey: string, privateRkey: string, expiredTime = 0): void {
+  capture(groupRkey: string, privateRkey: string, expiredTime = 0): void {
     let changed = false;
     if (groupRkey && groupRkey !== this.rkeyData.group_rkey) {
       this.rkeyData.group_rkey = groupRkey;
@@ -215,33 +234,37 @@ class RKeyManager {
     if (changed) this.saveCache();
   }
 
-  async getRkey (force = false): Promise<RKeyData> {
+  async getRkey(force = false): Promise<RKeyData> {
     if (force || this.isExpired()) {
       try {
         await this.refreshRkey();
       } catch (e) {
-        debugLog('[RKeyManager] get rkey failed, keep current cache:', e);
+        debugLog("[RKeyManager] get rkey failed, keep current cache:", e);
       }
     }
     return this.rkeyData;
   }
 
-  private isExpired (): boolean {
-    if (this.rkeyData.expired_time <= 0) return !this.rkeyData.group_rkey && !this.rkeyData.private_rkey;
+  private isExpired(): boolean {
+    if (this.rkeyData.expired_time <= 0)
+      return !this.rkeyData.group_rkey && !this.rkeyData.private_rkey;
     return Date.now() / 1000 > this.rkeyData.expired_time;
   }
 
-  private async refreshRkey (): Promise<void> {
+  private async refreshRkey(): Promise<void> {
     // 优先从 NapCat WebUI 获取;失败则 fallback 到服务器
     if (this.napcatSource) {
       try {
         const data = await this.fetchNapcatRkey();
         this.rkeyData = { ...data };
         this.saveCache();
-        debugLog('[RKeyManager] refreshed rkey from napcat:', this.napcatSource.url);
+        debugLog(
+          "[RKeyManager] refreshed rkey from napcat:",
+          this.napcatSource.url,
+        );
         return;
       } catch (e) {
-        debugLog('[RKeyManager] napcat source failed:', e);
+        debugLog("[RKeyManager] napcat source failed:", e);
       }
     }
     for (const server of this.servers) {
@@ -253,100 +276,128 @@ class RKeyManager {
           expired_time: data.expired_time ?? 0,
         };
         this.saveCache();
-        debugLog('[RKeyManager] refreshed rkey from server:', server);
+        debugLog("[RKeyManager] refreshed rkey from server:", server);
         return;
       } catch (e) {
-        debugLog('[RKeyManager] server failed:', server, e);
+        debugLog("[RKeyManager] server failed:", server, e);
       }
     }
-    throw new Error('all rkey sources failed');
+    throw new Error("all rkey sources failed");
   }
 
-  private async fetchServerRkey (server: string): Promise<RKeyData> {
+  private async fetchServerRkey(server: string): Promise<RKeyData> {
     const res = await netFetch(server);
     if (!res.ok) throw new Error(res.statusText);
     return (await res.json()) as RKeyData;
   }
 }
 
-const LEGACY_IMAGE_ORIGIN = 'https://gchat.qpic.cn';
-const NT_IMAGE_ORIGIN = 'https://multimedia.nt.qq.com.cn';
+const LEGACY_IMAGE_ORIGIN = "https://gchat.qpic.cn";
+const NT_IMAGE_ORIGIN = "https://multimedia.nt.qq.com.cn";
 
 class ImageDownloader {
-  private rkeyManager = new RKeyManager(RKEY_SERVERS, { cachePath: rkeyCachePath });
+  private rkeyManager = new RKeyManager(RKEY_SERVERS, {
+    cachePath: rkeyCachePath,
+  });
   private saveToDataDir: string | null = null;
 
-  constructor (opts?: { saveToDataDir?: string }) {
-    if (opts?.saveToDataDir) this.saveToDataDir = path.join(opts.saveToDataDir, 'images');
+  constructor(opts?: { saveToDataDir?: string }) {
+    if (opts?.saveToDataDir)
+      this.saveToDataDir = path.join(opts.saveToDataDir, "images");
   }
 
-  setSaveToDataDir (dataDir: string | null): void {
-    this.saveToDataDir = dataDir ? path.join(dataDir, 'images') : null;
+  setSaveToDataDir(dataDir: string | null): void {
+    this.saveToDataDir = dataDir ? path.join(dataDir, "images") : null;
   }
 
-  setNapcatSource (url: string, token: string): void {
+  setNapcatSource(url: string, token: string): void {
     this.rkeyManager.setNapcatSource(url, token);
   }
 
-  async testNapcatRkey (url: string, token: string): Promise<{ ok: boolean; data?: RKeyData; error?: string }> {
+  async testNapcatRkey(
+    url: string,
+    token: string,
+  ): Promise<{ ok: boolean; data?: RKeyData; error?: string }> {
     return await this.rkeyManager.testNapcatSource(url, token);
   }
 
-  captureRkey (groupRkey: string, privateRkey: string): void {
-    this.rkeyManager.capture(normalizeRkey(groupRkey), normalizeRkey(privateRkey));
+  captureRkey(groupRkey: string, privateRkey: string): void {
+    this.rkeyManager.capture(
+      normalizeRkey(groupRkey),
+      normalizeRkey(privateRkey),
+    );
   }
 
-  async getImageUrl (picElement: any, forceRkey = false): Promise<string> {
-    if (!picElement) return '';
+  async getImageUrl(picElement: any, forceRkey = false): Promise<string> {
+    if (!picElement) return "";
     const originImageUrl: string | undefined = picElement.originImageUrl;
     const md5HexStr: string | undefined = picElement.md5HexStr;
 
     if (originImageUrl) {
       const url = new URL(LEGACY_IMAGE_ORIGIN + originImageUrl);
-      const appid = url.searchParams.get('appid');
+      const appid = url.searchParams.get("appid");
 
-      if (appid && ['1406', '1407'].includes(appid)) {
-        let rkey = url.searchParams.get('rkey');
+      if (appid && ["1406", "1407"].includes(appid)) {
+        let rkey = url.searchParams.get("rkey");
         if (!rkey) {
           const rkeys = await this.rkeyManager.getRkey(forceRkey);
-          rkey = appid === '1406' ? normalizeRkey(rkeys.private_rkey) : normalizeRkey(rkeys.group_rkey);
+          rkey =
+            appid === "1406"
+              ? normalizeRkey(rkeys.private_rkey)
+              : normalizeRkey(rkeys.group_rkey);
         }
 
         const target = new URL(NT_IMAGE_ORIGIN + originImageUrl);
-        if (rkey) target.searchParams.set('rkey', rkey);
+        if (rkey) target.searchParams.set("rkey", rkey);
         return target.toString();
       }
 
       return LEGACY_IMAGE_ORIGIN + originImageUrl;
     }
 
-    if (md5HexStr) return `${LEGACY_IMAGE_ORIGIN}/gchatpic_new/0/0-0-${md5HexStr.toUpperCase()}/0`;
+    if (md5HexStr)
+      return `${LEGACY_IMAGE_ORIGIN}/gchatpic_new/0/0-0-${md5HexStr.toUpperCase()}/0`;
 
-    this.output('Pic url get error:', picElement);
-    return '';
+    this.output("Pic url get error:", picElement);
+    return "";
   }
 
-  async downloadPic (msgRecord: any): Promise<void> {
-    debugLog('[downloadPic] called. msgId=', msgRecord?.msgId, 'elementsCount=', msgRecord?.elements?.length);
+  async downloadPic(msgRecord: any): Promise<void> {
+    debugLog(
+      "[downloadPic] called. msgId=",
+      msgRecord?.msgId,
+      "elementsCount=",
+      msgRecord?.elements?.length,
+    );
     if (!Array.isArray(msgRecord?.elements)) {
-      debugLog('[downloadPic] no elements, abort.');
+      debugLog("[downloadPic] no elements, abort.");
       return;
     }
 
-    const msgIdStr = String(msgRecord?.msgId ?? '');
+    const msgIdStr = String(msgRecord?.msgId ?? "");
 
     for (let idx = 0; idx < msgRecord.elements.length; idx++) {
       const el = msgRecord.elements[idx];
       if (!el?.picElement) {
-        debugLog('[downloadPic] element[', idx, '] has no picElement, skip.');
+        debugLog("[downloadPic] element[", idx, "] has no picElement, skip.");
         continue;
       }
 
       const pic = el.picElement;
       const sourcePath: string | undefined = pic.sourcePath;
-      debugLog('[downloadPic] element[', idx, '] picElement keys=', Object.keys(pic).join(','), 'sourcePath=', sourcePath);
+      debugLog(
+        "[downloadPic] element[",
+        idx,
+        "] picElement keys=",
+        Object.keys(pic).join(","),
+        "sourcePath=",
+        sourcePath,
+      );
       if (!sourcePath) {
-        debugLog('[downloadPic] sourcePath missing, cannot download. pic=', safeStringify(pic));
+        debugLog(
+          "[downloadPic] sourcePath missing, cannot download. pic=",
+          safeStringify(pic),
+        );
         continue;
       }
 
@@ -357,22 +408,44 @@ class ImageDownloader {
       ]);
 
       let url = await this.getImageUrl(pic);
-      this.output('Download lost pic(s)... url=', url, 'msgId=', msgIdStr, 'to=', sourcePath);
-      debugLog('[downloadPic] resolved url=', url, 'msgId=', msgIdStr, 'to=', sourcePath);
+      this.output(
+        "Download lost pic(s)... url=",
+        url,
+        "msgId=",
+        msgIdStr,
+        "to=",
+        sourcePath,
+      );
+      debugLog(
+        "[downloadPic] resolved url=",
+        url,
+        "msgId=",
+        msgIdStr,
+        "to=",
+        sourcePath,
+      );
 
       let tooSmall = false;
       try {
         tooSmall = fs.statSync(sourcePath).size <= 100;
-        debugLog('[downloadPic] sourcePath exists, size=', fs.statSync(sourcePath).size);
+        debugLog(
+          "[downloadPic] sourcePath exists, size=",
+          fs.statSync(sourcePath).size,
+        );
       } catch (e) {
-        debugLog('[downloadPic] statSync(sourcePath) failed: ', e);
+        debugLog("[downloadPic] statSync(sourcePath) failed: ", e);
       }
 
       if (!fs.existsSync(sourcePath) || tooSmall) {
-        this.output('Download pic:', url, ' to ', sourcePath);
-        debugLog('[downloadPic] need download. exists=', fs.existsSync(sourcePath), 'tooSmall=', tooSmall);
+        this.output("Download pic:", url, " to ", sourcePath);
+        debugLog(
+          "[downloadPic] need download. exists=",
+          fs.existsSync(sourcePath),
+          "tooSmall=",
+          tooSmall,
+        );
         let data = await this.request(url);
-        debugLog('[downloadPic] download finished. bytes=', data?.length);
+        debugLog("[downloadPic] download finished. bytes=", data?.length);
         let parsed: any = null;
         try {
           parsed = JSON.parse(data.toString());
@@ -380,14 +453,21 @@ class ImageDownloader {
           parsed = null;
         }
 
-        const isRkeyError = parsed && parsed?.retmsg && String(parsed.retmsg).includes('rkey');
+        const isRkeyError =
+          parsed && parsed?.retmsg && String(parsed.retmsg).includes("rkey");
         if (isRkeyError) {
-          debugLog('[downloadPic] got invalid rkey, scrape renderer + force-refresh rkey and retry once. msg=', safeStringify(parsed));
+          debugLog(
+            "[downloadPic] got invalid rkey, scrape renderer + force-refresh rkey and retry once. msg=",
+            safeStringify(parsed),
+          );
           await scrapeAllWindowsForRkey();
           url = await this.getImageUrl(pic, true);
-          debugLog('[downloadPic] retry with url=', url);
+          debugLog("[downloadPic] retry with url=", url);
           data = await this.request(url);
-          debugLog('[downloadPic] retry download finished. bytes=', data?.length);
+          debugLog(
+            "[downloadPic] retry download finished. bytes=",
+            data?.length,
+          );
           try {
             parsed = JSON.parse(data.toString());
           } catch {
@@ -396,143 +476,206 @@ class ImageDownloader {
         }
 
         if (parsed) {
-          this.output('Picture already expired.', url, sourcePath);
-          debugLog('[downloadPic] downloaded body looks like JSON (expired). bytes=', data?.length, 'head=', data.toString('utf8').slice(0, 200));
+          this.output("Picture already expired.", url, sourcePath);
+          debugLog(
+            "[downloadPic] downloaded body looks like JSON (expired). bytes=",
+            data?.length,
+            "head=",
+            data.toString("utf8").slice(0, 200),
+          );
         } else {
           fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
           fs.writeFileSync(sourcePath, data);
-          debugLog('[downloadPic] saved to sourcePath. bytes=', data?.length);
+          debugLog("[downloadPic] saved to sourcePath. bytes=", data?.length);
           await this.copyToDataDir(data, msgIdStr, sourcePath, idx);
         }
       } else {
-        this.output('Pic already existed, skip.', sourcePath);
-        debugLog('[downloadPic] pic already exists, skip download.');
+        this.output("Pic already existed, skip.", sourcePath);
+        debugLog("[downloadPic] pic already exists, skip download.");
         if (this.saveToDataDir) {
-          await this.copyToDataDir(fs.readFileSync(sourcePath), msgIdStr, sourcePath, idx);
+          await this.copyToDataDir(
+            fs.readFileSync(sourcePath),
+            msgIdStr,
+            sourcePath,
+            idx,
+          );
         }
       }
 
-      if (pic?.thumbPath && (Array.isArray(pic.thumbPath) || pic.thumbPath instanceof Object)) {
+      if (
+        pic?.thumbPath &&
+        (Array.isArray(pic.thumbPath) || pic.thumbPath instanceof Object)
+      ) {
         pic.thumbPath = thumbMap;
       }
     }
   }
 
-  private async copyToDataDir (data: Buffer, msgId: string, sourcePath: string, idx: number): Promise<void> {
-    debugLog('[copyToDataDir] enter. msgId=', msgId, 'sourcePath=', sourcePath, 'saveToDataDir=', this.saveToDataDir);
+  private async copyToDataDir(
+    data: Buffer,
+    msgId: string,
+    sourcePath: string,
+    idx: number,
+  ): Promise<void> {
+    debugLog(
+      "[copyToDataDir] enter. msgId=",
+      msgId,
+      "sourcePath=",
+      sourcePath,
+      "saveToDataDir=",
+      this.saveToDataDir,
+    );
     if (!this.saveToDataDir) {
-      debugLog('[copyToDataDir] saveToDataDir disabled, skip.');
+      debugLog("[copyToDataDir] saveToDataDir disabled, skip.");
       return;
     }
     try {
       fs.mkdirSync(this.saveToDataDir, { recursive: true });
-      const ext = path.extname(sourcePath) || '.jpg';
-      const base = path.basename(sourcePath, ext).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32);
-      const out = path.join(this.saveToDataDir, `${msgId}_${idx}_${base}${ext}`);
+      const ext = path.extname(sourcePath) || ".jpg";
+      const base = path
+        .basename(sourcePath, ext)
+        .replace(/[^a-zA-Z0-9_-]/g, "_")
+        .slice(0, 32);
+      const out = path.join(
+        this.saveToDataDir,
+        `${msgId}_${idx}_${base}${ext}`,
+      );
       if (!fs.existsSync(out)) {
         fs.writeFileSync(out, data);
-        this.output('Saved recalled image to data dir:', out);
-        debugLog('[copyToDataDir] saved to data dir. bytes=', data?.length, 'out=', out);
+        this.output("Saved recalled image to data dir:", out);
+        debugLog(
+          "[copyToDataDir] saved to data dir. bytes=",
+          data?.length,
+          "out=",
+          out,
+        );
       } else {
-        debugLog('[copyToDataDir] target already exists, skip. out=', out);
+        debugLog("[copyToDataDir] target already exists, skip. out=", out);
       }
     } catch (e) {
-      this.output('Failed to copy image to data dir:', e);
-      debugLog('[copyToDataDir] FAILED:', e);
+      this.output("Failed to copy image to data dir:", e);
+      debugLog("[copyToDataDir] FAILED:", e);
     }
   }
 
-  private async request (url: string): Promise<Buffer> {
-    debugLog('[request] enter. url=', url);
+  private async request(url: string): Promise<Buffer> {
+    debugLog("[request] enter. url=", url);
     return await new Promise((resolve, reject) => {
-      const client = url.startsWith('https') ? https : http;
+      const client = url.startsWith("https") ? https : http;
       const req = client.get(url);
 
-      req.on('error', err => {
-        this.output('Download error', err);
-        debugLog('[request] request error:', err);
+      req.on("error", (err) => {
+        this.output("Download error", err);
+        debugLog("[request] request error:", err);
         reject(err);
       });
 
-      req.on('response', res => {
-        debugLog('[request] response. statusCode=', res.statusCode, 'location=', res.headers.location);
-        if (res.statusCode && res.statusCode >= 300 && res.statusCode <= 399 && res.headers.location) {
-          debugLog('[request] redirect to:', res.headers.location);
+      req.on("response", (res) => {
+        debugLog(
+          "[request] response. statusCode=",
+          res.statusCode,
+          "location=",
+          res.headers.location,
+        );
+        if (
+          res.statusCode &&
+          res.statusCode >= 300 &&
+          res.statusCode <= 399 &&
+          res.headers.location
+        ) {
+          debugLog("[request] redirect to:", res.headers.location);
           resolve(this.request(res.headers.location));
           return;
         }
 
         const chunks: Buffer[] = [];
-        res.on('error', err => {
-          this.output('Download error', err);
-          debugLog('[request] response error:', err);
+        res.on("error", (err) => {
+          this.output("Download error", err);
+          debugLog("[request] response error:", err);
           reject(err);
         });
-        res.on('data', c => chunks.push(Buffer.from(c)));
-        res.on('end', () => {
-          debugLog('[request] response end. totalChunks=', chunks.length, 'bytes=', Buffer.concat(chunks).length);
+        res.on("data", (c) => chunks.push(Buffer.from(c)));
+        res.on("end", () => {
+          debugLog(
+            "[request] response end. totalChunks=",
+            chunks.length,
+            "bytes=",
+            Buffer.concat(chunks).length,
+          );
           resolve(Buffer.concat(chunks));
         });
       });
     });
   }
 
-  private output (...args: unknown[]): void {
-    console.log('\x1B[32m%s\x1B[0m', 'Anti-Recall:', ...args);
+  private output(...args: unknown[]): void {
+    console.log("\x1B[32m%s\x1B[0m", "Anti-Recall:", ...args);
   }
 }
 
-console.log('%c[Anti-Recall]', 'background:#ffdc00;color:#000000D9;padding:2px 4px;border-radius:4px;', 'Main loaded');
+console.log(
+  "%c[Anti-Recall]",
+  "background:#ffdc00;color:#000000D9;padding:2px 4px;border-radius:4px;",
+  "Main loaded",
+);
 
-const PLUGIN_ID = 'qwqnt-anti-recall';
+const PLUGIN_ID = "qwqnt-better-anti-recall";
 
-function getConfigDir (): string {
-  const configs = (globalThis as any)?.qwqnt?.framework?.paths?.configs as string | undefined;
-  return configs ? path.join(configs, PLUGIN_ID) : path.join(app.getPath('userData'), 'qwqnt-storage', 'config', PLUGIN_ID);
+function getConfigDir(): string {
+  const configs = (globalThis as any)?.qwqnt?.framework?.paths?.configs as
+    | string
+    | undefined;
+  return configs
+    ? path.join(configs, PLUGIN_ID)
+    : path.join(app.getPath("userData"), "qwqnt-storage", "config", PLUGIN_ID);
 }
 
-function getDataDir (): string {
-  const data = (globalThis as any)?.qwqnt?.framework?.paths?.data as string | undefined;
-  return data ? path.join(data, PLUGIN_ID) : path.join(app.getPath('userData'), 'qwqnt-storage', 'data', PLUGIN_ID);
+function getDataDir(): string {
+  const data = (globalThis as any)?.qwqnt?.framework?.paths?.data as
+    | string
+    | undefined;
+  return data
+    ? path.join(data, PLUGIN_ID)
+    : path.join(app.getPath("userData"), "qwqnt-storage", "data", PLUGIN_ID);
 }
 
-let configPath = '';
+let configPath = "";
 const configDir = getConfigDir();
 const dataDir = getDataDir();
-const imagesDir = path.join(dataDir, 'images');
-const debugLogPath = path.join(dataDir, 'anti-recall-debug.log');
+const imagesDir = path.join(dataDir, "images");
+const debugLogPath = path.join(dataDir, "anti-recall-debug.log");
 
-function debugLog (...args: unknown[]): void {
+function debugLog(...args: unknown[]): void {
   try {
     const ts = new Date().toISOString();
-    const line = `${ts} ${args.map(a => (a instanceof Error ? a.stack ?? String(a) : typeof a === 'string' ? a : safeStringify(a))).join(' ')}\n`;
+    const line = `${ts} ${args.map((a) => (a instanceof Error ? (a.stack ?? String(a)) : typeof a === "string" ? a : safeStringify(a))).join(" ")}\n`;
     fs.mkdirSync(dataDir, { recursive: true });
-    fs.appendFileSync(debugLogPath, line, 'utf-8');
+    fs.appendFileSync(debugLogPath, line, "utf-8");
   } catch {
     // ignore
   }
 }
 
-function safeStringify (value: unknown): string {
+function safeStringify(value: unknown): string {
   try {
     const s = JSON.stringify(value);
     if (s === undefined) return String(value);
-    return s.length > 2000 ? s.slice(0, 2000) + '...' : s;
+    return s.length > 2000 ? s.slice(0, 2000) + "..." : s;
   } catch {
     return String(value);
   }
 }
 
-const jsonDbPath = path.join(dataDir, 'qq-recalled-db.json');
-const levelDbPath = path.join(dataDir, 'qq-recalled-db.ldb');
-const rkeyCachePath = path.join(dataDir, 'rkey-cache.json');
+const jsonDbPath = path.join(dataDir, "qq-recalled-db.json");
+const levelDbPath = path.join(dataDir, "qq-recalled-db.ldb");
+const rkeyCachePath = path.join(dataDir, "rkey-cache.json");
 
 const imageDownloader = new ImageDownloader();
 
 const DEFAULT_CONFIG: AntiRecallConfig = {
-  mainColor: '#ff6d6d',
+  mainColor: "#ff6d6d",
   saveDb: false,
-  dbStorageType: 'ldb',
+  dbStorageType: "ldb",
   saveImagesToDataDir: false,
   enableShadow: true,
   enableTip: true,
@@ -541,53 +684,57 @@ const DEFAULT_CONFIG: AntiRecallConfig = {
   maxMsgSaveLimit: 10_000,
   deleteMsgCountPerTime: 500,
   enableNapcatRkey: false,
-  napcatRkeyUrl: '',
-  napcatRkeyToken: '',
+  napcatRkeyUrl: "",
+  napcatRkeyToken: "",
 };
 
 let config: AntiRecallConfig = { ...DEFAULT_CONFIG };
 
-let effectiveStorage: EffectiveStorage = 'json';
+let effectiveStorage: EffectiveStorage = "json";
 let levelDb: any = null;
 let jsonDb: Record<string, unknown> | null = null;
 let levelError: string | null = null;
 
-function writeDefaultConfig (): void {
-  fs.writeFileSync(configPath, JSON.stringify(DEFAULT_CONFIG, null, 2), 'utf-8');
+function writeDefaultConfig(): void {
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify(DEFAULT_CONFIG, null, 2),
+    "utf-8",
+  );
 }
 
-function readConfig (): AntiRecallConfig {
+function readConfig(): AntiRecallConfig {
   if (!fs.existsSync(configPath)) {
     writeDefaultConfig();
     return { ...DEFAULT_CONFIG };
   }
-  return JSON.parse(fs.readFileSync(configPath, 'utf-8')) as AntiRecallConfig;
+  return JSON.parse(fs.readFileSync(configPath, "utf-8")) as AntiRecallConfig;
 }
 
-function updateImageSaveDir (): void {
+function updateImageSaveDir(): void {
   imageDownloader.setSaveToDataDir(config.saveImagesToDataDir ? dataDir : null);
 }
 
-async function tryOpenLevelDb (): Promise<boolean> {
+async function tryOpenLevelDb(): Promise<boolean> {
   if (levelDb) return true;
-  if (config.dbStorageType !== 'ldb') return false;
+  if (config.dbStorageType !== "ldb") return false;
 
   levelError = null;
   try {
-    const mod = (await import('level')) as any;
+    const mod = (await import("level")) as any;
     const LevelCtor = mod.Level ?? mod.default;
-    levelDb = new LevelCtor(levelDbPath, { valueEncoding: 'utf8' });
-    effectiveStorage = 'level';
-    log('Using LevelDB storage:', levelDbPath);
+    levelDb = new LevelCtor(levelDbPath, { valueEncoding: "utf8" });
+    effectiveStorage = "level";
+    log("Using LevelDB storage:", levelDbPath);
     return true;
   } catch (e: any) {
     levelError = e?.message ?? String(e);
-    log('LevelDB unavailable:', levelError);
+    log("LevelDB unavailable:", levelError);
     return false;
   }
 }
 
-function closeLevelDb (): void {
+function closeLevelDb(): void {
   if (!levelDb) return;
   try {
     void levelDb.close?.();
@@ -595,48 +742,51 @@ function closeLevelDb (): void {
     // ignore
   }
   levelDb = null;
-  effectiveStorage = 'json';
+  effectiveStorage = "json";
 }
 
-async function ensureJsonDbLoaded (): Promise<void> {
+async function ensureJsonDbLoaded(): Promise<void> {
   if (jsonDb !== null) return;
   try {
-    jsonDb = JSON.parse(fs.readFileSync(jsonDbPath, 'utf-8')) as Record<string, unknown>;
+    jsonDb = JSON.parse(fs.readFileSync(jsonDbPath, "utf-8")) as Record<
+      string,
+      unknown
+    >;
   } catch {
     jsonDb = {};
   }
 }
 
-function flushJsonDb (): void {
-  if (effectiveStorage === 'level') return;
+function flushJsonDb(): void {
+  if (effectiveStorage === "level") return;
   if (!jsonDb) return;
   fs.mkdirSync(path.dirname(jsonDbPath), { recursive: true });
-  fs.writeFileSync(jsonDbPath, JSON.stringify(jsonDb), 'utf-8');
+  fs.writeFileSync(jsonDbPath, JSON.stringify(jsonDb), "utf-8");
 }
 
-async function ensureStorageReady (): Promise<void> {
+async function ensureStorageReady(): Promise<void> {
   if (!config.saveDb) return;
 
-  if (config.dbStorageType === 'ldb') {
+  if (config.dbStorageType === "ldb") {
     const ok = await tryOpenLevelDb();
     if (!ok) {
-      effectiveStorage = 'json';
+      effectiveStorage = "json";
       await ensureJsonDbLoaded();
-      log('LevelDB failed, using JSON storage');
+      log("LevelDB failed, using JSON storage");
     }
     return;
   }
 
   closeLevelDb();
-  effectiveStorage = 'json';
+  effectiveStorage = "json";
   await ensureJsonDbLoaded();
 }
 
-async function saveToDb (record: any): Promise<void> {
+async function saveToDb(record: any): Promise<void> {
   if (!config.saveDb) return;
   await ensureStorageReady();
 
-  if (effectiveStorage === 'level' && levelDb) {
+  if (effectiveStorage === "level" && levelDb) {
     try {
       await levelDb.get(record.id);
     } catch {
@@ -652,11 +802,11 @@ async function saveToDb (record: any): Promise<void> {
   }
 }
 
-async function readFromDb (id: string): Promise<any | null> {
+async function readFromDb(id: string): Promise<any | null> {
   if (!config.saveDb) return null;
   await ensureStorageReady();
 
-  if (effectiveStorage === 'level' && levelDb) {
+  if (effectiveStorage === "level" && levelDb) {
     try {
       const v = await levelDb.get(id);
       return JSON.parse(v);
@@ -674,24 +824,24 @@ const recalledCache: Array<{ id: string; sender?: string; msg: any }> = [];
 
 const patchedWindows: BrowserWindow[] = [];
 
-function broadcast (channel: string): void {
+function broadcast(channel: string): void {
   for (const win of patchedWindows) {
     if (win.isDestroyed()) continue;
     win.webContents.send(channel);
   }
 }
 
-function captureRkeyFromUrls (urls: string[]): void {
+function captureRkeyFromUrls(urls: string[]): void {
   for (const url of urls ?? []) {
     try {
       const u = new URL(url);
-      const rkey = u.searchParams.get('rkey');
-      const appid = u.searchParams.get('appid');
+      const rkey = u.searchParams.get("rkey");
+      const appid = u.searchParams.get("appid");
       if (rkey) {
-        const groupRkey = appid === '1407' ? rkey : '';
-        const privateRkey = appid === '1406' ? rkey : '';
+        const groupRkey = appid === "1407" ? rkey : "";
+        const privateRkey = appid === "1406" ? rkey : "";
         imageDownloader.captureRkey(groupRkey, privateRkey);
-        debugLog('[rkey-capture] observed rkey. appid=', appid, 'url=', url);
+        debugLog("[rkey-capture] observed rkey. appid=", appid, "url=", url);
       }
     } catch {
       // ignore
@@ -699,7 +849,7 @@ function captureRkeyFromUrls (urls: string[]): void {
   }
 }
 
-async function scrapeAllWindowsForRkey (): Promise<void> {
+async function scrapeAllWindowsForRkey(): Promise<void> {
   for (const win of patchedWindows) {
     try {
       if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
@@ -720,7 +870,7 @@ async function scrapeAllWindowsForRkey (): Promise<void> {
             });
           } catch {}
           return Array.from(out).slice(0, 200);
-        })()`
+        })()`,
       );
       captureRkeyFromUrls(urls);
     } catch {
@@ -729,7 +879,7 @@ async function scrapeAllWindowsForRkey (): Promise<void> {
   }
 }
 
-function patchWindow (win: BrowserWindow): void {
+function patchWindow(win: BrowserWindow): void {
   if (!win?.webContents || win.isDestroyed()) return;
   const wc: any = win.webContents;
   if (wc.__antiRecallPatched) return;
@@ -741,41 +891,51 @@ function patchWindow (win: BrowserWindow): void {
     if (ses && !ses.__antiRecallRkeyHook) {
       ses.__antiRecallRkeyHook = true;
       ses.webRequest.onBeforeRequest(
-        { urls: ['https://multimedia.nt.qq.com.cn/*', 'https://gchat.qpic.cn/*'] },
+        {
+          urls: [
+            "https://multimedia.nt.qq.com.cn/*",
+            "https://gchat.qpic.cn/*",
+          ],
+        },
         (details: any, callback: any) => {
           captureRkeyFromUrls([details.url]);
-          if (typeof callback === 'function') callback({});
-        }
+          if (typeof callback === "function") callback({});
+        },
       );
     }
   } catch (e) {
-    debugLog('[rkey-capture] setup failed:', e);
+    debugLog("[rkey-capture] setup failed:", e);
   }
 
   // Scrape valid rkey from the renderer's loaded image URLs (QQ kernel bypasses webRequest).
   const doScrape = (): void => {
     void scrapeAllWindowsForRkey();
   };
-  wc.on('did-finish-load', doScrape);
+  wc.on("did-finish-load", doScrape);
   const scrapeTimer = setInterval(doScrape, 10_000);
-  wc.once('destroyed', () => {
+  wc.once("destroyed", () => {
     clearInterval(scrapeTimer);
     const i = patchedWindows.indexOf(win);
     if (i !== -1) patchedWindows.splice(i, 1);
   });
 
-  const originalSend: any = wc.__qqntim_original_object?.send ?? wc.send.bind(wc);
+  const originalSend: any =
+    wc.__qqntim_original_object?.send ?? wc.send.bind(wc);
 
   const wrappedSend = async (channel: string, ...args: any[]): Promise<any> => {
     try {
       if (args.length >= 2) {
         // msgList update: used to build recalled list on scroll.
         const hasMsgListUpdate = args.some(
-          x => x && Object.prototype.hasOwnProperty.call(x, 'msgList') && Array.isArray(x.msgList) && x.msgList.length > 0
+          (x) =>
+            x &&
+            Object.prototype.hasOwnProperty.call(x, "msgList") &&
+            Array.isArray(x.msgList) &&
+            x.msgList.length > 0,
         );
 
         if (hasMsgListUpdate) {
-          let peerUid = '';
+          let peerUid = "";
           const recalledIndex: number[] = [];
 
           for (const i in args[1].msgList) {
@@ -785,7 +945,8 @@ function patchWindow (win: BrowserWindow): void {
               msg.msgType === 5 &&
               msg.subMsgType === 4 &&
               msg.elements?.[0]?.grayTipElement?.revokeElement &&
-              (config.isAntiRecallSelfMsg || !msg.elements[0].grayTipElement.revokeElement.isSelfOperate)
+              (config.isAntiRecallSelfMsg ||
+                !msg.elements[0].grayTipElement.revokeElement.isSelfOperate)
             ) {
               recalledIndex.push(Number(i));
             }
@@ -797,41 +958,57 @@ function patchWindow (win: BrowserWindow): void {
             const recalled = args[1].msgList[i];
             const msgId = String(recalled.msgId);
 
-            const fromFlow = msgFlowCache.find(x => x.id === msgId);
-            const fromRecalled = recalledCache.find(x => x.id === msgId);
+            const fromFlow = msgFlowCache.find((x) => x.id === msgId);
+            const fromRecalled = recalledCache.find((x) => x.id === msgId);
             const fromDb = await readFromDb(msgId);
 
             let record: any = null;
-            let source = '';
+            let source = "";
 
             if (fromRecalled) {
               record = fromRecalled;
-              source = 'old msg';
+              source = "old msg";
             } else if (fromFlow) {
               if (!fromRecalled) recalledCache.push(fromFlow);
               record = fromFlow;
-              source = 'msgFlow';
+              source = "msgFlow";
             } else if (fromDb) {
               if (!fromRecalled) recalledCache.push(fromDb);
               record = fromDb;
-              source = 'dbMsg';
+              source = "dbMsg";
             }
 
-            if (record?.msg && typeof record.msg === 'object') {
+            if (record?.msg && typeof record.msg === "object") {
               const recovered = { ...record.msg, isOnlineMsg: true };
               await imageDownloader.downloadPic(recovered);
-              log('Detected recall, intercepted and recovered from ' + source);
+              log("Detected recall, intercepted and recovered from " + source);
 
               for (const k in recovered) {
-                if (['msgSeq', 'cntSeq', 'clientSeq', 'sendStatus', 'emojiLikesList'].includes(k)) continue;
+                if (
+                  [
+                    "msgSeq",
+                    "cntSeq",
+                    "clientSeq",
+                    "sendStatus",
+                    "emojiLikesList",
+                  ].includes(k)
+                )
+                  continue;
 
                 const v = (recovered as any)[k];
                 const old = recalled[k];
 
                 let next = v;
-                if (['msgAttrs', 'msgMeta', 'generalFlags'].includes(k) && v && typeof v === 'object' && old && typeof old === 'object') {
+                if (
+                  ["msgAttrs", "msgMeta", "generalFlags"].includes(k) &&
+                  v &&
+                  typeof v === "object" &&
+                  old &&
+                  typeof old === "object"
+                ) {
                   for (const kk in old) {
-                    if (Object.prototype.hasOwnProperty.call(old, kk)) delete old[kk];
+                    if (Object.prototype.hasOwnProperty.call(old, kk))
+                      delete old[kk];
                   }
                   next = Object.assign(old, v);
                 }
@@ -842,32 +1019,44 @@ function patchWindow (win: BrowserWindow): void {
           }
 
           wc.send(
-            'LiteLoader.anti_recall.mainWindow.recallTipList',
-            recalledCache.filter(x => x.sender === peerUid || x?.sender == null).map(x => x.id)
+            "LiteLoader.anti_recall.mainWindow.recallTipList",
+            recalledCache
+              .filter((x) => x.sender === peerUid || x?.sender == null)
+              .map((x) => x.id),
           );
         }
 
         // cmdName update: used to detect realtime recall and cache incoming messages.
-        const hasCmd = args.some(x => x && Object.prototype.hasOwnProperty.call(x, 'cmdName') && x.cmdName != null);
+        const hasCmd = args.some(
+          (x) =>
+            x &&
+            Object.prototype.hasOwnProperty.call(x, "cmdName") &&
+            x.cmdName != null,
+        );
         if (hasCmd) {
           const payloadWrapper = args[1];
           if (!payloadWrapper) return originalSend(channel, ...args);
 
           if (
             payloadWrapper.cmdName &&
-            (payloadWrapper.cmdName.includes('onMsgInfoListUpdate') || payloadWrapper.cmdName.includes('onActiveMsgInfoUpdate')) &&
+            (payloadWrapper.cmdName.includes("onMsgInfoListUpdate") ||
+              payloadWrapper.cmdName.includes("onActiveMsgInfoUpdate")) &&
             payloadWrapper.payload?.msgList instanceof Array &&
             payloadWrapper.payload.msgList[0]?.msgType === 5 &&
             payloadWrapper.payload.msgList[0]?.subMsgType === 4
           ) {
             const recallMsg = payloadWrapper.payload.msgList[0];
-            const revoke = recallMsg.elements?.[0]?.grayTipElement?.revokeElement;
-            if (revoke && (config.isAntiRecallSelfMsg || !revoke.isSelfOperate)) {
+            const revoke =
+              recallMsg.elements?.[0]?.grayTipElement?.revokeElement;
+            if (
+              revoke &&
+              (config.isAntiRecallSelfMsg || !revoke.isSelfOperate)
+            ) {
               const recallId = String(recallMsg.msgId);
-              wc.send('LiteLoader.anti_recall.mainWindow.recallTip', recallId);
+              wc.send("LiteLoader.anti_recall.mainWindow.recallTip", recallId);
 
-              const cached = msgFlowCache.find(x => x.id === recallId);
-              const already = recalledCache.find(x => x.id === recallId);
+              const cached = msgFlowCache.find((x) => x.id === recallId);
+              const already = recalledCache.find((x) => x.id === recallId);
               if (cached && !already) {
                 recalledCache.push(cached);
                 if (config.saveDb) await saveToDb(cached);
@@ -876,22 +1065,30 @@ function patchWindow (win: BrowserWindow): void {
               await imageDownloader.downloadPic(cached?.msg);
               await imageDownloader.downloadPic(already?.msg);
 
-              args[1].cmdName = 'none';
+              args[1].cmdName = "none";
               args[1].payload.msgList.pop();
-              log('Detected recall, intercepted');
+              log("Detected recall, intercepted");
             }
           } else if (
             (payloadWrapper.cmdName &&
               payloadWrapper.payload &&
-              (payloadWrapper.cmdName.includes('onRecvMsg') || payloadWrapper.cmdName.includes('onRecvActiveMsg')) &&
+              (payloadWrapper.cmdName.includes("onRecvMsg") ||
+                payloadWrapper.cmdName.includes("onRecvActiveMsg")) &&
               payloadWrapper.payload.msgList instanceof Array) ||
-            (payloadWrapper.cmdName && payloadWrapper.cmdName.includes('onAddSendMsg') && payloadWrapper.payload?.msgRecord != null) ||
-            (payloadWrapper.cmdName && payloadWrapper.cmdName.includes('onMsgInfoListUpdate') && payloadWrapper.payload?.msgList instanceof Array)
+            (payloadWrapper.cmdName &&
+              payloadWrapper.cmdName.includes("onAddSendMsg") &&
+              payloadWrapper.payload?.msgRecord != null) ||
+            (payloadWrapper.cmdName &&
+              payloadWrapper.cmdName.includes("onMsgInfoListUpdate") &&
+              payloadWrapper.payload?.msgList instanceof Array)
           ) {
-            const list: any[] = payloadWrapper.payload.msgList instanceof Array ? payloadWrapper.payload.msgList : [payloadWrapper.payload.msgRecord];
+            const list: any[] =
+              payloadWrapper.payload.msgList instanceof Array
+                ? payloadWrapper.payload.msgList
+                : [payloadWrapper.payload.msgRecord];
             for (const msg of list) {
               const msgId = String(msg.msgId);
-              let idx = msgFlowCache.findIndex(x => x.id === msgId);
+              let idx = msgFlowCache.findIndex((x) => x.id === msgId);
               if (idx === -1) {
                 msgFlowCache.push({ id: msgId, sender: msg.peerUid, msg });
                 idx = msgFlowCache.length - 1;
@@ -899,9 +1096,12 @@ function patchWindow (win: BrowserWindow): void {
               msgFlowCache[idx] = { id: msgId, sender: msg.peerUid, msg };
 
               if (config.enablePeriodicCleanup) {
-                if (config.maxMsgSaveLimit == null) config.maxMsgSaveLimit = 10_000;
-                if (config.deleteMsgCountPerTime == null) config.deleteMsgCountPerTime = 500;
-                if (msgFlowCache.length > config.maxMsgSaveLimit) msgFlowCache.splice(0, config.deleteMsgCountPerTime);
+                if (config.maxMsgSaveLimit == null)
+                  config.maxMsgSaveLimit = 10_000;
+                if (config.deleteMsgCountPerTime == null)
+                  config.deleteMsgCountPerTime = 500;
+                if (msgFlowCache.length > config.maxMsgSaveLimit)
+                  msgFlowCache.splice(0, config.deleteMsgCountPerTime);
               }
             }
           }
@@ -909,62 +1109,74 @@ function patchWindow (win: BrowserWindow): void {
       }
     } catch (e) {
       log(
-        'NTQQ Anti-Recall Error: ',
+        "NTQQ Anti-Recall Error: ",
         e,
-        'Please report this to https://github.com/xh321/LiteLoaderQQNT-Anti-Recall/issues, thank you'
+        "Please report this to https://github.com/xh321/LiteLoaderQQNT-Anti-Recall/issues, thank you",
       );
     }
 
     return originalSend(channel, ...args);
   };
 
-  if (wc.__qqntim_original_object) wc.__qqntim_original_object.send = wrappedSend;
+  if (wc.__qqntim_original_object)
+    wc.__qqntim_original_object.send = wrappedSend;
   else wc.send = wrappedSend;
 
-  log('NTQQ Anti-Recall patched for window:', win.id);
+  log("NTQQ Anti-Recall patched for window:", win.id);
 }
 
-function log (...args: unknown[]): void {
-  console.log('\x1B[32m%s\x1B[0m', 'Anti-Recall:', ...args);
+function log(...args: unknown[]): void {
+  console.log("\x1B[32m%s\x1B[0m", "Anti-Recall:", ...args);
 }
 
-function registerIpcHandlers (): void {
-  ipcMain.handle('LiteLoader.anti_recall.getNowConfig', async () => config);
+function registerIpcHandlers(): void {
+  ipcMain.handle("LiteLoader.anti_recall.getNowConfig", async () => config);
 
-  ipcMain.handle('LiteLoader.anti_recall.getStorageStatus', async (): Promise<StorageStatus> => {
-    if (config.saveDb && config.dbStorageType === 'ldb') await ensureStorageReady();
-    return {
-      effective: effectiveStorage,
-      requested: config.dbStorageType,
-      error: levelError ?? undefined,
-    };
-  });
+  ipcMain.handle(
+    "LiteLoader.anti_recall.getStorageStatus",
+    async (): Promise<StorageStatus> => {
+      if (config.saveDb && config.dbStorageType === "ldb")
+        await ensureStorageReady();
+      return {
+        effective: effectiveStorage,
+        requested: config.dbStorageType,
+        error: levelError ?? undefined,
+      };
+    },
+  );
 
-  ipcMain.handle('LiteLoader.anti_recall.saveConfig', async (_event, newConfig: AntiRecallConfig) => {
-    const prevStorage = config.dbStorageType;
-    config = newConfig;
+  ipcMain.handle(
+    "LiteLoader.anti_recall.saveConfig",
+    async (_event, newConfig: AntiRecallConfig) => {
+      const prevStorage = config.dbStorageType;
+      config = newConfig;
 
-    if (newConfig.dbStorageType !== 'ldb' && prevStorage === 'ldb') closeLevelDb();
-    updateImageSaveDir();
-    imageDownloader.setNapcatSource(
-      newConfig.enableNapcatRkey ? newConfig.napcatRkeyUrl ?? '' : '',
-      newConfig.enableNapcatRkey ? newConfig.napcatRkeyToken ?? '' : ''
-    );
-    broadcast('LiteLoader.anti_recall.mainWindow.repatchCss');
+      if (newConfig.dbStorageType !== "ldb" && prevStorage === "ldb")
+        closeLevelDb();
+      updateImageSaveDir();
+      imageDownloader.setNapcatSource(
+        newConfig.enableNapcatRkey ? (newConfig.napcatRkeyUrl ?? "") : "",
+        newConfig.enableNapcatRkey ? (newConfig.napcatRkeyToken ?? "") : "",
+      );
+      broadcast("LiteLoader.anti_recall.mainWindow.repatchCss");
 
-    fs.writeFileSync(configPath, JSON.stringify(newConfig, null, 2), 'utf-8');
-  });
+      fs.writeFileSync(configPath, JSON.stringify(newConfig, null, 2), "utf-8");
+    },
+  );
 
-  ipcMain.handle('LiteLoader.anti_recall.testNapcatRkey', async (_event, url: string, token: string) => {
-    return await imageDownloader.testNapcatRkey(url, token);
-  });
+  ipcMain.handle(
+    "LiteLoader.anti_recall.testNapcatRkey",
+    async (_event, url: string, token: string) => {
+      return await imageDownloader.testNapcatRkey(url, token);
+    },
+  );
 
-  ipcMain.handle('LiteLoader.anti_recall.clearDb', async () => {
+  ipcMain.handle("LiteLoader.anti_recall.clearDb", async () => {
     const res = await dialog.showMessageBox({
-      type: 'warning',
-      title: '警告',
-      message: '清空所有已储存的撤回消息后不可恢复，是否确认清空？',
-      buttons: ['确定', '取消'],
+      type: "warning",
+      title: "警告",
+      message: "清空所有已储存的撤回消息后不可恢复，是否确认清空？",
+      buttons: ["确定", "取消"],
       cancelId: 1,
     });
 
@@ -980,35 +1192,38 @@ function registerIpcHandlers (): void {
       closeLevelDb();
 
       if (fs.existsSync(jsonDbPath)) fs.unlinkSync(jsonDbPath);
-      if (fs.existsSync(levelDbPath)) fs.rmSync(levelDbPath, { recursive: true, force: true });
-      if (fs.existsSync(imagesDir)) fs.rmSync(imagesDir, { recursive: true, force: true });
+      if (fs.existsSync(levelDbPath))
+        fs.rmSync(levelDbPath, { recursive: true, force: true });
+      if (fs.existsSync(imagesDir))
+        fs.rmSync(imagesDir, { recursive: true, force: true });
     } catch {
       // ignore
     }
 
     await dialog.showMessageBox({
-      type: 'info',
-      title: '提示',
-      message: '清空完毕，之前保存的所有已撤回消息均被删除，重启 QQ 后就能看见效果。',
-      buttons: ['确定'],
+      type: "info",
+      title: "提示",
+      message:
+        "清空完毕，之前保存的所有已撤回消息均被删除，重启 QQ 后就能看见效果。",
+      buttons: ["确定"],
     });
   });
 }
 
-async function initStorageIfNeeded (): Promise<void> {
+async function initStorageIfNeeded(): Promise<void> {
   if (!config.saveDb) return;
   await ensureStorageReady();
 }
 
-async function init (): Promise<void> {
+async function init(): Promise<void> {
   if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-  configPath = path.join(configDir, 'config.json');
+  configPath = path.join(configDir, "config.json");
   config = readConfig();
 
-  if (config.mainColor == null) config.mainColor = '#ff6d6d';
-  if (config.dbStorageType == null) config.dbStorageType = 'json';
+  if (config.mainColor == null) config.mainColor = "#ff6d6d";
+  if (config.dbStorageType == null) config.dbStorageType = "json";
   if (config.saveImagesToDataDir == null) config.saveImagesToDataDir = false;
   if (config.enableShadow == null) config.enableShadow = true;
   if (config.enableTip == null) config.enableTip = true;
@@ -1016,20 +1231,22 @@ async function init (): Promise<void> {
   if (config.maxMsgSaveLimit == null) config.maxMsgSaveLimit = 10_000;
   if (config.deleteMsgCountPerTime == null) config.deleteMsgCountPerTime = 500;
   if (config.enableNapcatRkey == null) config.enableNapcatRkey = false;
-  if (config.napcatRkeyUrl == null) config.napcatRkeyUrl = '';
-  if (config.napcatRkeyToken == null) config.napcatRkeyToken = '';
+  if (config.napcatRkeyUrl == null) config.napcatRkeyUrl = "";
+  if (config.napcatRkeyToken == null) config.napcatRkeyToken = "";
 
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
 
   updateImageSaveDir();
   imageDownloader.setNapcatSource(
-    config.enableNapcatRkey ? config.napcatRkeyUrl : '',
-    config.enableNapcatRkey ? config.napcatRkeyToken : ''
+    config.enableNapcatRkey ? config.napcatRkeyUrl : "",
+    config.enableNapcatRkey ? config.napcatRkeyToken : "",
   );
   registerIpcHandlers();
   await initStorageIfNeeded();
 
-  (qwqnt as any).main.hooks.whenBrowserWindowCreated.peek((w: BrowserWindow) => patchWindow(w));
+  (qwqnt as any).main.hooks.whenBrowserWindowCreated.peek((w: BrowserWindow) =>
+    patchWindow(w),
+  );
   for (const w of BrowserWindow.getAllWindows()) {
     if (w && !w.isDestroyed()) patchWindow(w);
   }

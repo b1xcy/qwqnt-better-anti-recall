@@ -1,4 +1,4 @@
-# qwqnt-anti-recall
+# qwqnt-better-anti-recall
 
 基于 QwQNT 框架的 **QQNT 简易防撤回**。  
 本插件迁移自 [LiteLoaderQQNT-Anti-Recall](https://github.com/xh321/LiteLoaderQQNT-Anti-Recall)
@@ -22,19 +22,19 @@
 
 要正常使用本插件，你**必须**先安装并启用以下前置插件：
 
-- [`qwqnt-ipc-interceptor`](https://github.com/qwqnt-community/qwqnt-ipc-interceptor)  
+- [`qwqnt-ipc-interceptor`](https://github.com/qwqnt-community/qwqnt-ipc-interceptor)
 - [`qwqnt-hako`](https://github.com/qwqnt-community/qwqnt-hako)
 
 ## 安装与使用
 
 > 本节假设你已经正确安装了 QwQNT 框架，并了解如何安装 QwQNT 插件。
 
-1. 下载构建好的 `qwqnt-anti-recall.zip` 插件包。  
-2. 按 QwQNT 要求，将压缩包解压并放入插件目录。  
+1. 下载构建好的 `qwqnt-better-anti-recall.zip` 插件包。
+2. 按 QwQNT 要求，将压缩包解压并放入插件目录。
 3. 确保以下插件在 QwQNT 中已启用：
    - `qwqnt-ipc-interceptor`
    - `qwqnt-hako`
-   - `qwqnt-anti-recall`
+   - `qwqnt-better-anti-recall`
 4. 重新运行QwQNT框架。
 
 **注意：qwqnt-hako请不要和qwqnt-renderer-events、qwqnt-plugin-settings这两个插件一起安装。**
@@ -47,10 +47,10 @@
   - 关闭：只在内存中短期缓存，重启 QQNT 后撤回记录不再保留。
   - 开启：将撤回记录持久化到 JSON 或 LevelDB。
 - **存储格式**
-  - JSON（明文）：存储在 `<data>/qwqnt-anti-recall/qq-recalled-db.json`。
-  - LevelDB（二进制）：使用 `level` 库，存储在 `<data>/qwqnt-anti-recall/qq-recalled-db.ldb`。
+  - JSON（明文）：存储在 `<data>/qwqnt-better-anti-recall/qq-recalled-db.json`。
+  - LevelDB（二进制）：使用 `level` 库，存储在 `<data>/qwqnt-better-anti-recall/qq-recalled-db.ldb`。
 - **是否将撤回图片保存到数据目录**
-  - 开启后，图片会额外复制到 `<data>/qwqnt-anti-recall/images/`，文件名中包含消息 ID 及简化后的原始文件名。
+  - 开启后，图片会额外复制到 `<data>/qwqnt-better-anti-recall/images/`，文件名中包含消息 ID 及简化后的原始文件名。
 - **是否反撤回自己的消息**
   - 开启后，自己撤回的消息也会被保留；从下一条新消息开始生效。
 - **启用定期清理**
@@ -82,7 +82,6 @@ pnpm install
 ```bash
 pnpm build
 ```
-
 
 ## 开源协议
 

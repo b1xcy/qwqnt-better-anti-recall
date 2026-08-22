@@ -3,7 +3,7 @@ name: Release Plugin
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   release:
-    name: Build and release qwqnt-anti-recall.zip
+    name: Build and release qwqnt-better-anti-recall.zip
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -49,10 +49,10 @@ jobs:
       # 自带的全平台 N-API prebuilds 接管，zip 在 Windows / macOS / Linux 均可用。
       # 若 zip 中无此目录（rebuild 未产出），zip -d 返回非零，忽略即可。
       - name: Strip CI-specific native binary from zip
-        run: zip -d qwqnt-anti-recall.zip 'node_modules/leveldown/build/*' 'node_modules/leveldown/build/*/*' || true
+        run: zip -d qwqnt-better-anti-recall.zip 'node_modules/leveldown/build/*' 'node_modules/leveldown/build/*/*' || true
 
       - name: Create release and upload zip
         uses: softprops/action-gh-release@v2
         with:
-          files: qwqnt-anti-recall.zip
+          files: qwqnt-better-anti-recall.zip
           generate_release_notes: true
