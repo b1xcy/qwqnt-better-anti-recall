@@ -1,0 +1,27 @@
+* { box-sizing: border-box; }
+body { margin: 0; background: #f2f2f2; color: #111; font-family: system-ui,-apple-system,"Segoe UI",sans-serif; }
+@media (prefers-color-scheme: dark) { body { background:#111;color:#ffffffe6; } }
+.html,body { height:100%;margin:0;overflow:hidden; }
+.app { display:grid;grid-template-columns:minmax(180px,1fr) minmax(0,3fr);height:100vh;width:100%;overflow:hidden; }
+.panel { display:flex !important;flex-direction:column !important;height:100% !important;min-width:0 !important;min-height:0 !important;overflow:hidden !important;position:relative; }
+.side { background:#fff;border-right:1px solid rgba(127,127,127,.22);padding:10px 8px 12px; }
+.main { padding:14px 18px 18px; }
+.panel-title { color:inherit;flex:none;font-size:12px;font-weight:600;margin:0 0 8px 4px;opacity:.65; }
+.app > .panel > .scroll { display:block;flex:1 1 auto;margin:0;max-height:none;min-width:0;min-height:0;overflow-x:hidden !important;overflow-y:auto !important;padding:2px;position:relative;z-index:auto; }
+.side .scroll { padding:0; }
+.empty { align-items:center;display:flex;height:100%;justify-content:center;opacity:.65; }
+.empty { align-items:center;display:flex;height:100%;justify-content:center;opacity:.65; }
+.item { align-items:center;background:none;border:0;border-radius:5px;color:inherit;cursor:pointer;display:flex;font:inherit;gap:7px;padding:8px;text-align:left;width:100%; }
+.item:hover { background:rgba(13,110,207,.12); }
+.item.active { background:#0d6ecf;color:#fff; }
+.tag { background:#90a4ae;border-radius:4px;flex:0 0 16px;font-size:10px;height:16px;line-height:16px;text-align:center;color:#fff; }
+.name { flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.count { opacity:.65; }
+.msg { margin-bottom:14px;max-width:calc(100% - 32px); }
+.sender { font-size:12px;margin:0 0 4px 9px;opacity:.75; }
+.bubble { background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.12);font-size:14px;line-height:1.45;max-width:100%;padding:9px 11px;overflow-wrap:anywhere; }
+@media (prefers-color-scheme:dark) { .side{background:#1b1b1b;} .bubble{background:#262626;box-shadow:0 2px 8px rgba(0,0,0,.35);} }
+.content { margin:0;white-space:pre-wrap;word-break:break-word; }
+.tail { float:right;font-size:12px;margin-left:12px;opacity:.6; }
+.images { display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px; }
+.images img { border-radius:6px;height:132px;object-fit:cover;width:132px; }

@@ -96,7 +96,10 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
             <setting-list data-direction="column">
               <setting-item data-direction="row">
                 <setting-text>操作</setting-text>
-                <button id="clearDb" class="q-button q-button--small q-button--secondary">清空已储存的撤回消息</button>
+                <div style="display:flex;gap:10px;">
+                  <button id="viewRecalled" class="q-button q-button--small q-button--secondary">查看所有已撤回的消息</button>
+                  <button id="clearDb" class="q-button q-button--small q-button--secondary">清空已储存的撤回消息</button>
+                </div>
               </setting-item>
 
               <setting-item data-direction="row">
@@ -258,6 +261,25 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
           .config_view .vertical-list-item { margin: 12px 0px; display: flex; justify-content: space-between; align-items: center; }
           .config_view .horizontal-dividing-line { border: unset; margin: unset; height: 1px; background-color: rgba(127, 127, 127, 0.15); }
           .config_view .hidden { display: none !important; }
+          .anti-recall-viewer { --ar-sidebar-bg:#fff; --ar-list-bg:#f2f2f2; --ar-bubble-bg:#fff; --ar-text:#111; --ar-hover-bg:rgba(0,153,255,.1); --ar-active-bg:#09f; --ar-active-text:#fff; --ar-tag-bg:#90a4ae; --ar-tag-text:#fff; --ar-empty:#777; color:var(--ar-text); display:flex; height:min(72vh,680px); overflow:hidden; width:100%; }
+          @media (prefers-color-scheme:dark) { .anti-recall-viewer { --ar-sidebar-bg:#1b1b1b; --ar-list-bg:#111; --ar-bubble-bg:#262626; --ar-text:#ffffffe6; --ar-hover-bg:rgba(13,110,207,.3); --ar-active-bg:#0d6ecf; --ar-active-text:#ffffffe6; --ar-tag-bg:#67767e; --ar-tag-text:#ffffffa1; --ar-empty:#ffffff8c; } }
+          .anti-recall-viewer * { box-sizing:border-box; }
+          .anti-recall-sidebar { background:var(--ar-sidebar-bg); flex:0 0 clamp(220px,28%,320px); overflow-y:auto; padding:8px 6px; }
+          .anti-recall-chat { align-items:center; background:transparent; border:0; border-radius:4px; color:inherit; cursor:pointer; display:flex; font:inherit; gap:6px; min-height:32px; overflow:hidden; padding:6px 8px; text-align:left; transition:background-color .15s ease,color .15s ease; width:100%; }
+          .anti-recall-chat:hover { background:var(--ar-hover-bg); }
+          .anti-recall-chat.active { background:var(--ar-active-bg)!important; color:var(--ar-active-text); }
+          .anti-recall-chat-tag { background:var(--ar-tag-bg); border-radius:4px; flex:0 0 16px; font-size:10px; height:16px; line-height:16px; text-align:center; }
+          .anti-recall-chat-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+          .anti-recall-chat-count { flex-shrink:0; opacity:.65; }
+          .anti-recall-main { background:var(--ar-list-bg); flex:1; height:100%; overflow-y:auto; padding:18px 14px; }
+          .anti-recall-message { align-items:flex-start; display:flex; margin-bottom:12px; }
+          .anti-recall-bubble { background:var(--ar-bubble-bg); border-radius:8px; color:var(--ar-text); font-size:14px; max-width:calc(100% - 32px); padding:8px 10px; word-break:break-word; }
+          .anti-recall-sender { color:var(--ar-text); font-size:12px; margin:0 0 4px 8px; opacity:.82; }
+          .anti-recall-content { margin:0; }
+          .anti-recall-tail { float:right; font-size:12px; line-height:16px; margin:-2px 0 0 12px; opacity:.6; text-align:right; white-space:nowrap; }
+          .anti-recall-images { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px; }
+          .anti-recall-image { background:rgba(127,127,127,.14); border-radius:6px; height:132px; object-fit:cover; width:132px; }
+          .anti-recall-empty { color: var(--text_secondary); line-height: 28px; padding-top: 40px; text-align: center; }
           .config_view .periodic-cleanup-sub.hidden { display: none !important; }
           .config_view .secondary-text { color: var(--text_secondary); font-size: min(var(--font_size_2), 16px); line-height: min(var(--line_height_2), 22px); margin-top: 4px; }
           .anti-recall-rkey * { box-sizing: border-box; }
@@ -351,6 +373,10 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
   const clearBtn = menu.querySelector<HTMLButtonElement>("#clearDb");
   clearBtn?.addEventListener("click", async () => {
     await window.anti_recall.clearDb();
+  });
+
+  menu.querySelector<HTMLButtonElement>("#viewRecalled")?.addEventListener("click", () => {
+    window.anti_recall.openRecallViewer();
   });
 
   const maxMsgLimit = menu.querySelector<HTMLInputElement>("#maxMsgLimit");
@@ -556,6 +582,178 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
   container.appendChild(menu);
 }
 
+async function openRecallHistory(container: HTMLElement): Promise<void> {
+  const existing = container.querySelector(".anti-recall-viewer");
+  if (existing) existing.remove();
+
+  const viewer = document.createElement("div");
+  viewer.className = "anti-recall-viewer";
+  viewer.innerHTML = `
+    <aside class="anti-recall-sidebar"><div id="recallChatList"><div class="anti-recall-empty">加载中...</div></div></aside>
+    <main class="anti-recall-main"><div id="recallMessageList"><div class="anti-recall-empty">加载中...</div></div></main>
+  `;
+  container.appendChild(viewer);
+
+  const chatListEl = viewer.querySelector<HTMLElement>("#recallChatList")!;
+  const messageListEl = viewer.querySelector<HTMLElement>("#recallMessageList")!;
+
+  const showMessages = (
+    records: Array<{ id: string; sender?: string; msg: any }>,
+    activeChat?: HTMLElement,
+  ) => {
+    chatListEl.querySelectorAll(".anti-recall-chat").forEach((item) =>
+      item.classList.toggle("active", item === activeChat),
+    );
+    messageListEl.innerHTML = "";
+    if (!records.length) {
+      messageListEl.innerHTML = `<div class="anti-recall-empty">该会话没有撤回数据</div>`;
+      return;
+    }
+    for (const record of [...records].sort(
+      (a, b) => Number(b.msg?.msgTime ?? 0) - Number(a.msg?.msgTime ?? 0),
+    )) {
+      messageListEl.appendChild(buildRecallEntry(record));
+    }
+  };
+
+  let records: Array<{ id: string; sender?: string; msg: any }> = [];
+  try {
+    records = await window.anti_recall.getRecalledMessages();
+    if (!records.length) {
+      chatListEl.innerHTML = `<div class="anti-recall-empty">暂无数据<br />开启“存入数据库”后生效</div>`;
+      messageListEl.innerHTML = `<div class="anti-recall-empty">请选择左侧会话</div>`;
+      return;
+    }
+
+    const chats = new Map<
+      string,
+      {
+        count: number;
+        kind: string;
+        label: string;
+        records: Array<{ id: string; sender?: string; msg: any }>;
+        sender: string;
+      }
+    >();
+    for (const record of records) {
+      const peerUid = String(record.sender ?? record.msg?.peerUid ?? "unknown");
+      const chat = chats.get(peerUid) ?? {
+        count: 0,
+        kind: getRecallCategoryLabel(record.msg),
+        label: getPeerName(record.msg) || "未知会话",
+        records: [],
+        sender: peerUid,
+      };
+      chat.count += 1;
+      chat.records.push(record);
+      chats.set(peerUid, chat);
+    }
+
+    chatListEl.innerHTML = "";
+    let firstChat: HTMLElement | undefined;
+    for (const chat of [...chats.values()].sort((a, b) => b.count - a.count)) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "anti-recall-chat";
+      button.title = `${chat.label}（${chat.sender}）`;
+      button.innerHTML = `<span class="anti-recall-chat-tag"></span><span class="anti-recall-chat-name"></span><span class="anti-recall-chat-count"></span>`;
+      (button.children[0] as HTMLElement).textContent = chat.kind;
+      (button.children[1] as HTMLElement).textContent = chat.label;
+      (button.children[2] as HTMLElement).textContent = String(chat.count);
+      button.addEventListener("click", () => showMessages(chat.records, button));
+      chatListEl.appendChild(button);
+      firstChat ??= button;
+    }
+
+    showMessages([...chats.values()][0].records, firstChat);
+  } catch (e) {
+    console.error("[Anti-Recall] 加载撤回记录失败:", e);
+    chatListEl.innerHTML = `<div class="anti-recall-empty">加载失败</div>`;
+    messageListEl.innerHTML = `<div class="anti-recall-empty">请查看控制台日志</div>`;
+  }
+}
+
+function buildRecallEntry(record: { id: string; msg: any }): HTMLElement {
+  const item = document.createElement("article");
+  item.className = "anti-recall-message";
+
+  const box = document.createElement("div");
+  box.className = "anti-recall-bubble";
+
+  const time = Number(record.msg?.msgTime ?? 0);
+  const sender = document.createElement("p");
+  sender.className = "anti-recall-sender";
+  sender.textContent = getSenderName(record.msg) || "未知发送者";
+
+  const content = document.createElement("p");
+  content.className = "anti-recall-content";
+
+  const images = document.createElement("div");
+  images.className = "anti-recall-images";
+  let imageCount = 0;
+  for (const element of Array.isArray(record.msg?.elements) ? record.msg.elements : []) {
+    const pic = element?.picElement;
+    const source = pic?.sourcePath || Object.values(pic?.thumbPath ?? {})[0];
+    if (typeof source === "string" && /\.(png|jpe?g|gif|webp|bmp)$/i.test(source)) {
+      const image = document.createElement("img");
+      image.className = "anti-recall-image";
+      image.src = localImageUrl(source);
+      image.alt = "加载失败";
+      image.addEventListener("error", () => image.remove());
+      images.appendChild(image);
+      imageCount += 1;
+    }
+  }
+
+  const tail = document.createElement("span");
+  tail.className = "anti-recall-tail";
+  tail.textContent = time
+    ? new Date(time * 1000).toLocaleString()
+    : "没有撤回信息";
+
+  content.textContent = extractRecallText(record.msg) || "不支持的消息类型";
+  if (imageCount) box.appendChild(images);
+  content.appendChild(tail);
+  box.appendChild(content);
+  item.append(sender, box);
+  return item;
+}
+
+function getRecallCategoryLabel(msg: any): string {
+  const type = Number(msg?.chatType ?? 0);
+  return type === 2 ? "群" : type === 1 ? "私" : "临";
+}
+
+function localImageUrl(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_m, drive: string) => drive.toLowerCase() + ":");
+  return `file:///${encodeURIComponent(normalized).replace(/%2F/gi, "/").replace(/%3A/gi, ":")}`;
+}
+
+function getPeerName(msg: any): string {
+  return msg?.peerName ?? msg?.peerUin ?? msg?.peerUid ?? "";
+}
+
+function getSenderName(msg: any): string {
+  return msg?.sendMemberName ?? msg?.sendNickName ?? msg?.sendUserName ?? "";
+}
+
+function extractRecallText(msg: any): string {
+  const elements = Array.isArray(msg?.elements) ? msg.elements : [];
+  return elements.map((element: any) => {
+    if (element.textElement?.content) return element.textElement.content;
+    if (element.faceElement?.faceText) return `[表情 ${element.faceElement.faceText}]`;
+    if (element.replyElement) return "[引用回复]";
+    if (element.picElement) return "[图片]";
+    if (element.videoElement) return "[视频]";
+    if (element.fileElement) return `[文件 ${element.fileElement.fileName ?? ""}]`;
+    if (element.arkElement) return "[卡片消息]";
+    if (element.multiForwardMsgElement) return "[转发消息]";
+    if (element.markdownElement) return element.markdownElement.content ?? "[Markdown]";
+    if (element.grayTipElement) return "";
+    return "";
+  }).join("").trim();
+}
+
 async function refreshStorageStatus(menu: Element): Promise<void> {
   const statusEl = menu.querySelector<HTMLElement>("#storageStatus");
   if (!statusEl) return;
@@ -620,6 +818,7 @@ async function applyCssFromConfig(): Promise<void> {
       border-radius: 10px;
       position: relative;
       overflow: unset !important;
+      padding-bottom: 6px;
   `;
 
   if (currentConfig.enableShadow === true) {
@@ -637,7 +836,19 @@ async function applyCssFromConfig(): Promise<void> {
   css += `
     }
 
+    .forward-msg.message-content-recalled-parent,
+    .multi-forward-msg.message-content-recalled-parent {
+      box-shadow: 0px 0px 8px 5px ${currentConfig.mainColor} !important;
+      margin-bottom: 25px !important;
+    }
+
     .recalledNoMargin { margin-top: 0px !important; }
+
+    .message-content-recalled-parent.forward-msg,
+    .message-content-recalled-parent.multi-forward-msg {
+      margin: 4px 3px 25px;
+      border-radius: 10px;
+    }
 
     .message-content-recalled {
       position: absolute;
@@ -730,8 +941,35 @@ async function markRecalledInView(): Promise<void> {
       const d = item.querySelector<HTMLElement>(
         `div[id='ark-msg-content-container_${id}']`,
       );
+      const forward = item.querySelector<HTMLElement>(
+        [
+          `.multi-forward-msg[data-id='${id}']`,
+          `[data-msgid='${id}'].forward-msg`,
+          `.forward-msg[data-id='${id}']`,
+          `div[id='ml-${id}-msgContentForward']`,
+          `div[id='${CSS.escape(id)}-msgContentForward']`,
+        ].join(","),
+      );
 
-      if (a) {
+      const forwardedNodes = item.querySelectorAll<HTMLElement>(
+        [
+          ".forward-msg",
+          ".multi-forward-msg",
+          "[class*='forward'][class*='msg']",
+        ].join(","),
+      );
+      if (forwardedNodes.length) {
+        console.log("[Anti-Recall]", "匹配转发消息节点", {
+          msgId: id,
+          count: forwardedNodes.length,
+          classes: [...forwardedNodes].map((node) => node.className),
+        });
+        await markForwardedMessage(forwardedNodes[0], id);
+      }
+
+      if (forward) {
+        await markForwardedMessage(forward, id);
+      } else if (a) {
         if (a.classList.contains("gray-tip-message")) continue;
         await markRecalled(a);
       } else if (b?.parentElement) {
@@ -765,6 +1003,20 @@ async function markRecalledById(msgId: string): Promise<void> {
     .getElementById(`ml-${msgId}`)
     ?.querySelector<HTMLElement>(".msg-content-container");
   const ark = document.getElementById(`ark-msg-content-container_${msgId}`);
+  const forward = document.querySelector<HTMLElement>(
+    [
+      `.multi-forward-msg[data-id='${msgId}']`,
+      `[data-msgid='${msgId}'].forward-msg`,
+      `.forward-msg[data-id='${msgId}']`,
+      `#ml-${CSS.escape(msgId)}-msgContentForward`,
+      `#${CSS.escape(msgId)}-msgContentForward`,
+    ].join(","),
+  );
+
+  if (forward) {
+    await markForwardedMessage(forward, msgId);
+    return;
+  }
 
   if (t) {
     if (t.classList.contains("gray-tip-message")) return;
@@ -797,13 +1049,46 @@ async function markRecalledById(msgId: string): Promise<void> {
   if (bySelector) await markRecalled(bySelector);
 }
 
+async function markForwardedMessage(node: HTMLElement, msgId: string): Promise<void> {
+  const bubble =
+    (node.matches(".forward-msg") || node.matches(".multi-forward-msg")
+      ? node
+      : node.querySelector<HTMLElement>(".forward-msg, .multi-forward-msg")) ??
+    node;
+
+  console.log("[Anti-Recall]", "标记转发消息阴影", {
+    msgId,
+    target: bubble,
+    className: bubble.className,
+  });
+
+  await markRecalled(bubble);
+}
+
 async function markRecalled(container: HTMLElement): Promise<void> {
   if (!container) return;
 
-  const existing = container.querySelector(".message-content-recalled");
-  if (existing) return;
+  const existingTips = container.querySelectorAll<HTMLElement>(
+    ":scope > .message-content-recalled",
+  );
+  if (existingTips.length > 1) {
+    for (const tip of [...existingTips].slice(1)) tip.remove();
+  }
 
-  container.classList.add("message-content-recalled-parent");
+  const isMarked =
+    container.classList.contains("message-content-recalled-parent") ||
+    existingTips.length > 0;
+  if (isMarked) {
+    container.classList.add("message-content-recalled-parent");
+    return;
+  }
+
+  if (container.classList.contains("message-content__wrapper")) {
+    container.classList.add("message-content-recalled-parent");
+  } else {
+    container.classList.add("message-content-recalled-parent", "recalledNoMargin");
+  }
+
   if (currentConfig.enableTip === true) {
     const tip = document.createElement("div");
     tip.innerText = "已撤回";

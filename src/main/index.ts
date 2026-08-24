@@ -819,8 +819,29 @@ async function readFromDb(id: string): Promise<any | null> {
   return (jsonDb as any)[id] ?? null;
 }
 
+async function readAllFromDb(): Promise<any[]> {
+  if (!config.saveDb) return [];
+  await ensureStorageReady();
+
+  if (effectiveStorage === "level" && levelDb) {
+    const items: any[] = [];
+    for await (const value of levelDb.values()) {
+      try {
+        items.push(JSON.parse(value));
+      } catch {
+        // Ignore malformed legacy records.
+      }
+    }
+    return items;
+  }
+
+  await ensureJsonDbLoaded();
+  return Object.values(jsonDb ?? {});
+}
+
 const msgFlowCache: Array<{ id: string; sender?: string; msg: any }> = [];
 const recalledCache: Array<{ id: string; sender?: string; msg: any }> = [];
+let recallViewerWindow: BrowserWindow | null = null;
 
 const patchedWindows: BrowserWindow[] = [];
 
@@ -1126,12 +1147,73 @@ function patchWindow(win: BrowserWindow): void {
 }
 
 function log(...args: unknown[]): void {
-  console.log("\x1B[32m%s\x1B[0m", "Anti-Recall:", ...args);
+  debugLog("[RecallViewer] lifecycle:", ...args);
 }
 
 function registerIpcHandlers(): void {
   ipcMain.handle("LiteLoader.anti_recall.getNowConfig", async () => config);
 
+  ipcMain.handle(
+    "LiteLoader.anti_recall.getRecalledMessages",
+    async () => {
+      const dbRecords = await readAllFromDb();
+      const mergedById = new Map<string, any>();
+
+      for (const record of [...dbRecords, ...recalledCache]) {
+        const id = String(record?.id ?? "");
+        if (id && record?.msg && typeof record.msg === "object") {
+          mergedById.set(id, record);
+        }
+      }
+
+      return Array.from(mergedById.values()).sort(
+        (a, b) =>
+          Number(b.msg?.msgTime ?? 0) - Number(a.msg?.msgTime ?? 0),
+      );
+    },
+  );
+
+  ipcMain.on("LiteLoader.anti_recall.openRecallViewer", () => {
+    if (recallViewerWindow && !recallViewerWindow.isDestroyed()) {
+      recallViewerWindow.focus();
+      return;
+    }
+
+    recallViewerWindow = new BrowserWindow({
+      width: 900,
+      height: 640,
+      autoHideMenuBar: true,
+      title: "撤回消息",
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        preload: path.join(__dirname, "../preload/recallMsgViewer.cjs"),
+      },
+    });
+    recallViewerWindow.setMenuBarVisibility(false);
+    const pluginRoot = path.resolve(__dirname, "..");
+    const viewerPath = path.join(
+      pluginRoot,
+      "renderer/pages/recallMsgViewer/index.html",
+    );
+    debugLog("[RecallViewer] opening", { pluginRoot, viewerPath, exists: fs.existsSync(viewerPath) });
+    void recallViewerWindow.loadFile(viewerPath);
+    recallViewerWindow.webContents.on("did-start-loading", () => {
+      debugLog("[RecallViewer] loading");
+    });
+    recallViewerWindow.webContents.on("did-finish-load", () => {
+      debugLog("[RecallViewer] loaded");
+    });
+    recallViewerWindow.webContents.on(
+      "did-fail-load",
+      (_event, code, description, url) => {
+        debugLog("[RecallViewer] load failed:", { code, description, url });
+      },
+    );
+    recallViewerWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+      debugLog("[RecallViewer] console:", { level, message, line, sourceId });
+    });
+  });
   ipcMain.handle(
     "LiteLoader.anti_recall.getStorageStatus",
     async (): Promise<StorageStatus> => {

@@ -3,6 +3,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('anti_recall', {
   clearDb: () => ipcRenderer.invoke('LiteLoader.anti_recall.clearDb'),
   getNowConfig: () => ipcRenderer.invoke('LiteLoader.anti_recall.getNowConfig'),
+  getRecalledMessages: () => ipcRenderer.invoke('LiteLoader.anti_recall.getRecalledMessages'),
+  openRecallViewer: () => ipcRenderer.send('LiteLoader.anti_recall.openRecallViewer'),
   getStorageStatus: () => ipcRenderer.invoke('LiteLoader.anti_recall.getStorageStatus'),
   saveConfig: (newConfig: unknown) => ipcRenderer.invoke('LiteLoader.anti_recall.saveConfig', newConfig),
   testNapcatRkey: (url: string, token: string) =>

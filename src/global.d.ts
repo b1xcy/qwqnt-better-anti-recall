@@ -43,6 +43,8 @@ declare global {
     anti_recall: {
       clearDb: () => Promise<void>;
       getNowConfig: <T = unknown>() => Promise<T>;
+      getRecalledMessages: () => Promise<Array<{ id: string; sender?: string; msg: any }>>;
+      openRecallViewer: () => void;
       getStorageStatus: () => Promise<{ effective: 'json' | 'level'; requested: 'json' | 'ldb'; error?: string }>;
       saveConfig: <T = unknown>(newConfig: T) => Promise<void>;
       testNapcatRkey: (url: string, token: string) => Promise<{
@@ -53,6 +55,9 @@ declare global {
       repatchCss: (callback: () => void) => void;
       recallTip: (callback: (_event: unknown, msgId: string) => void) => void;
       recallTipList: (callback: (_event: unknown, msgIds: string[]) => void) => void;
+    };
+    anti_recall_viewer?: {
+      getRecalledMessages: () => Promise<Array<{ id: string; sender?: string; msg: any }>>;
     };
   }
 }
