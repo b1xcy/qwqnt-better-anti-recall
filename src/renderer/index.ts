@@ -1,10 +1,6 @@
-type DbStorageType = "json" | "ldb";
-type EffectiveStorage = "json" | "level";
-
 interface AntiRecallConfig {
   mainColor: string;
   saveDb: boolean;
-  dbStorageType: DbStorageType;
   saveImagesToDataDir: boolean;
   enableShadow: boolean;
   enableTip: boolean;
@@ -27,7 +23,6 @@ const packageJson = {
 const DEFAULT_CONFIG: AntiRecallConfig = {
   mainColor: "#ff6d6d",
   saveDb: false,
-  dbStorageType: "json",
   saveImagesToDataDir: false,
   enableShadow: true,
   enableTip: true,
@@ -112,16 +107,12 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
                 </div>
               </setting-item>
 
-              <setting-item id="dbStorageTypeRow" data-direction="row" class="hidden">
-                <div style="width:90%;">
-                  <setting-text>存储格式</setting-text>
-                  <span class="secondary-text">JSON 为明文，LevelDB 为二进制格式（需重启 QQ 后生效）。</span>
+              <setting-item id="storageStatusRow" data-direction="row" class="hidden">
+                <div style="width:100%;">
+                  <setting-text>存储状态</setting-text>
+                  <span class="secondary-text">明文 JSON，按 1 MB 自动分片存放在数据目录的 recalled 子文件夹。</span>
                   <div id="storageStatus" class="secondary-text" style="margin-top:6px;color:var(--text_tertiary);"></div>
                 </div>
-                <select id="dbStorageTypeSelect" class="q-button q-button--small q-button--secondary" style="min-width:120px;">
-                  <option value="json">JSON（明文）</option>
-                  <option value="ldb">LevelDB（二进制）</option>
-                </select>
               </setting-item>
 
               <setting-item data-direction="row">
@@ -261,24 +252,6 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
           .config_view .vertical-list-item { margin: 12px 0px; display: flex; justify-content: space-between; align-items: center; }
           .config_view .horizontal-dividing-line { border: unset; margin: unset; height: 1px; background-color: rgba(127, 127, 127, 0.15); }
           .config_view .hidden { display: none !important; }
-          .anti-recall-viewer { --ar-sidebar-bg:#fff; --ar-list-bg:#f2f2f2; --ar-bubble-bg:#fff; --ar-text:#111; --ar-hover-bg:rgba(0,153,255,.1); --ar-active-bg:#09f; --ar-active-text:#fff; --ar-tag-bg:#90a4ae; --ar-tag-text:#fff; --ar-empty:#777; color:var(--ar-text); display:flex; height:min(72vh,680px); overflow:hidden; width:100%; }
-          @media (prefers-color-scheme:dark) { .anti-recall-viewer { --ar-sidebar-bg:#1b1b1b; --ar-list-bg:#111; --ar-bubble-bg:#262626; --ar-text:#ffffffe6; --ar-hover-bg:rgba(13,110,207,.3); --ar-active-bg:#0d6ecf; --ar-active-text:#ffffffe6; --ar-tag-bg:#67767e; --ar-tag-text:#ffffffa1; --ar-empty:#ffffff8c; } }
-          .anti-recall-viewer * { box-sizing:border-box; }
-          .anti-recall-sidebar { background:var(--ar-sidebar-bg); flex:0 0 clamp(220px,28%,320px); overflow-y:auto; padding:8px 6px; }
-          .anti-recall-chat { align-items:center; background:transparent; border:0; border-radius:4px; color:inherit; cursor:pointer; display:flex; font:inherit; gap:6px; min-height:32px; overflow:hidden; padding:6px 8px; text-align:left; transition:background-color .15s ease,color .15s ease; width:100%; }
-          .anti-recall-chat:hover { background:var(--ar-hover-bg); }
-          .anti-recall-chat.active { background:var(--ar-active-bg)!important; color:var(--ar-active-text); }
-          .anti-recall-chat-tag { background:var(--ar-tag-bg); border-radius:4px; flex:0 0 16px; font-size:10px; height:16px; line-height:16px; text-align:center; }
-          .anti-recall-chat-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-          .anti-recall-chat-count { flex-shrink:0; opacity:.65; }
-          .anti-recall-main { background:var(--ar-list-bg); flex:1; height:100%; overflow-y:auto; padding:18px 14px; }
-          .anti-recall-message { align-items:flex-start; display:flex; margin-bottom:12px; }
-          .anti-recall-bubble { background:var(--ar-bubble-bg); border-radius:8px; color:var(--ar-text); font-size:14px; max-width:calc(100% - 32px); padding:8px 10px; word-break:break-word; }
-          .anti-recall-sender { color:var(--ar-text); font-size:12px; margin:0 0 4px 8px; opacity:.82; }
-          .anti-recall-content { margin:0; }
-          .anti-recall-tail { float:right; font-size:12px; line-height:16px; margin:-2px 0 0 12px; opacity:.6; text-align:right; white-space:nowrap; }
-          .anti-recall-images { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px; }
-          .anti-recall-image { background:rgba(127,127,127,.14); border-radius:6px; height:132px; object-fit:cover; width:132px; }
           .anti-recall-empty { color: var(--text_secondary); line-height: 28px; padding-top: 40px; text-align: center; }
           .config_view .periodic-cleanup-sub.hidden { display: none !important; }
           .config_view .secondary-text { color: var(--text_secondary); font-size: min(var(--font_size_2), 16px); line-height: min(var(--line_height_2), 22px); margin-top: 4px; }
@@ -411,16 +384,11 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
   }
 
   const switchSaveDb = menu.querySelector<HTMLElement>("#switchSaveDb");
-  const storageRow = menu.querySelector<HTMLElement>("#dbStorageTypeRow");
-  const storageSelect = menu.querySelector<HTMLSelectElement>(
-    "#dbStorageTypeSelect",
-  );
+  const storageRow = menu.querySelector<HTMLElement>("#storageStatusRow");
 
-  if (switchSaveDb && storageRow && storageSelect) {
+  if (switchSaveDb && storageRow) {
     setSwitchActive(switchSaveDb, currentConfig.saveDb === true);
     storageRow.classList.toggle("hidden", !currentConfig.saveDb);
-    storageSelect.value =
-      currentConfig.dbStorageType === "ldb" ? "ldb" : "json";
 
     switchSaveDb.addEventListener("click", async () => {
       const next = !switchSaveDb.classList.contains("is-active");
@@ -429,13 +397,6 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
       storageRow.classList.toggle("hidden", !next);
       await window.anti_recall.saveConfig(currentConfig);
       if (next) await refreshStorageStatus(menu);
-    });
-
-    storageSelect.addEventListener("change", async () => {
-      currentConfig.dbStorageType =
-        storageSelect.value === "ldb" ? "ldb" : "json";
-      await window.anti_recall.saveConfig(currentConfig);
-      await refreshStorageStatus(menu);
     });
 
     if (currentConfig.saveDb) await refreshStorageStatus(menu);
@@ -582,176 +543,10 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
   container.appendChild(menu);
 }
 
-async function openRecallHistory(container: HTMLElement): Promise<void> {
-  const existing = container.querySelector(".anti-recall-viewer");
-  if (existing) existing.remove();
-
-  const viewer = document.createElement("div");
-  viewer.className = "anti-recall-viewer";
-  viewer.innerHTML = `
-    <aside class="anti-recall-sidebar"><div id="recallChatList"><div class="anti-recall-empty">加载中...</div></div></aside>
-    <main class="anti-recall-main"><div id="recallMessageList"><div class="anti-recall-empty">加载中...</div></div></main>
-  `;
-  container.appendChild(viewer);
-
-  const chatListEl = viewer.querySelector<HTMLElement>("#recallChatList")!;
-  const messageListEl = viewer.querySelector<HTMLElement>("#recallMessageList")!;
-
-  const showMessages = (
-    records: Array<{ id: string; sender?: string; msg: any }>,
-    activeChat?: HTMLElement,
-  ) => {
-    chatListEl.querySelectorAll(".anti-recall-chat").forEach((item) =>
-      item.classList.toggle("active", item === activeChat),
-    );
-    messageListEl.innerHTML = "";
-    if (!records.length) {
-      messageListEl.innerHTML = `<div class="anti-recall-empty">该会话没有撤回数据</div>`;
-      return;
-    }
-    for (const record of [...records].sort(
-      (a, b) => Number(b.msg?.msgTime ?? 0) - Number(a.msg?.msgTime ?? 0),
-    )) {
-      messageListEl.appendChild(buildRecallEntry(record));
-    }
-  };
-
-  let records: Array<{ id: string; sender?: string; msg: any }> = [];
-  try {
-    records = await window.anti_recall.getRecalledMessages();
-    if (!records.length) {
-      chatListEl.innerHTML = `<div class="anti-recall-empty">暂无数据<br />开启“存入数据库”后生效</div>`;
-      messageListEl.innerHTML = `<div class="anti-recall-empty">请选择左侧会话</div>`;
-      return;
-    }
-
-    const chats = new Map<
-      string,
-      {
-        count: number;
-        kind: string;
-        label: string;
-        records: Array<{ id: string; sender?: string; msg: any }>;
-        sender: string;
-      }
-    >();
-    for (const record of records) {
-      const peerUid = String(record.sender ?? record.msg?.peerUid ?? "unknown");
-      const chat = chats.get(peerUid) ?? {
-        count: 0,
-        kind: getRecallCategoryLabel(record.msg),
-        label: getPeerName(record.msg) || "未知会话",
-        records: [],
-        sender: peerUid,
-      };
-      chat.count += 1;
-      chat.records.push(record);
-      chats.set(peerUid, chat);
-    }
-
-    chatListEl.innerHTML = "";
-    let firstChat: HTMLElement | undefined;
-    for (const chat of [...chats.values()].sort((a, b) => b.count - a.count)) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "anti-recall-chat";
-      button.title = `${chat.label}（${chat.sender}）`;
-      button.innerHTML = `<span class="anti-recall-chat-tag"></span><span class="anti-recall-chat-name"></span><span class="anti-recall-chat-count"></span>`;
-      (button.children[0] as HTMLElement).textContent = chat.kind;
-      (button.children[1] as HTMLElement).textContent = chat.label;
-      (button.children[2] as HTMLElement).textContent = String(chat.count);
-      button.addEventListener("click", () => showMessages(chat.records, button));
-      chatListEl.appendChild(button);
-      firstChat ??= button;
-    }
-
-    showMessages([...chats.values()][0].records, firstChat);
-  } catch (e) {
-    console.error("[Anti-Recall] 加载撤回记录失败:", e);
-    chatListEl.innerHTML = `<div class="anti-recall-empty">加载失败</div>`;
-    messageListEl.innerHTML = `<div class="anti-recall-empty">请查看控制台日志</div>`;
-  }
-}
-
-function buildRecallEntry(record: { id: string; msg: any }): HTMLElement {
-  const item = document.createElement("article");
-  item.className = "anti-recall-message";
-
-  const box = document.createElement("div");
-  box.className = "anti-recall-bubble";
-
-  const time = Number(record.msg?.msgTime ?? 0);
-  const sender = document.createElement("p");
-  sender.className = "anti-recall-sender";
-  sender.textContent = getSenderName(record.msg) || "未知发送者";
-
-  const content = document.createElement("p");
-  content.className = "anti-recall-content";
-
-  const images = document.createElement("div");
-  images.className = "anti-recall-images";
-  let imageCount = 0;
-  for (const element of Array.isArray(record.msg?.elements) ? record.msg.elements : []) {
-    const pic = element?.picElement;
-    const source = pic?.sourcePath || Object.values(pic?.thumbPath ?? {})[0];
-    if (typeof source === "string" && /\.(png|jpe?g|gif|webp|bmp)$/i.test(source)) {
-      const image = document.createElement("img");
-      image.className = "anti-recall-image";
-      image.src = localImageUrl(source);
-      image.alt = "加载失败";
-      image.addEventListener("error", () => image.remove());
-      images.appendChild(image);
-      imageCount += 1;
-    }
-  }
-
-  const tail = document.createElement("span");
-  tail.className = "anti-recall-tail";
-  tail.textContent = time
-    ? new Date(time * 1000).toLocaleString()
-    : "没有撤回信息";
-
-  content.textContent = extractRecallText(record.msg) || "不支持的消息类型";
-  if (imageCount) box.appendChild(images);
-  content.appendChild(tail);
-  box.appendChild(content);
-  item.append(sender, box);
-  return item;
-}
-
-function getRecallCategoryLabel(msg: any): string {
-  const type = Number(msg?.chatType ?? 0);
-  return type === 2 ? "群" : type === 1 ? "私" : "临";
-}
-
-function localImageUrl(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_m, drive: string) => drive.toLowerCase() + ":");
-  return `file:///${encodeURIComponent(normalized).replace(/%2F/gi, "/").replace(/%3A/gi, ":")}`;
-}
-
-function getPeerName(msg: any): string {
-  return msg?.peerName ?? msg?.peerUin ?? msg?.peerUid ?? "";
-}
-
-function getSenderName(msg: any): string {
-  return msg?.sendMemberName ?? msg?.sendNickName ?? msg?.sendUserName ?? "";
-}
-
-function extractRecallText(msg: any): string {
-  const elements = Array.isArray(msg?.elements) ? msg.elements : [];
-  return elements.map((element: any) => {
-    if (element.textElement?.content) return element.textElement.content;
-    if (element.faceElement?.faceText) return `[表情 ${element.faceElement.faceText}]`;
-    if (element.replyElement) return "[引用回复]";
-    if (element.picElement) return "[图片]";
-    if (element.videoElement) return "[视频]";
-    if (element.fileElement) return `[文件 ${element.fileElement.fileName ?? ""}]`;
-    if (element.arkElement) return "[卡片消息]";
-    if (element.multiForwardMsgElement) return "[转发消息]";
-    if (element.markdownElement) return element.markdownElement.content ?? "[Markdown]";
-    if (element.grayTipElement) return "";
-    return "";
-  }).join("").trim();
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 async function refreshStorageStatus(menu: Element): Promise<void> {
@@ -763,25 +558,8 @@ async function refreshStorageStatus(menu: Element): Promise<void> {
   }
 
   try {
-    const status = (await window.anti_recall.getStorageStatus()) as {
-      effective: EffectiveStorage;
-      requested: DbStorageType;
-      error?: string;
-    };
-
-    if (status.effective === "level") {
-      statusEl.textContent = "当前使用：LevelDB ✓";
-      statusEl.style.color = "";
-      return;
-    }
-
-    if (status.requested === "ldb" && status.error) {
-      statusEl.textContent = `LevelDB 不可用：${status.error}`;
-      statusEl.style.color = "var(--red)";
-      return;
-    }
-
-    statusEl.textContent = "当前使用：JSON";
+    const status = await window.anti_recall.getStorageStatus();
+    statusEl.textContent = `已存 ${status.recordCount} 条，${status.shardCount} 个分片，共 ${formatBytes(status.totalBytes)}`;
     statusEl.style.color = "";
   } catch {
     statusEl.textContent = "";

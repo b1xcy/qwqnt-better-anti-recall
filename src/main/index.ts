@@ -4,14 +4,11 @@ import http from "node:http";
 import https from "node:https";
 import crypto from "node:crypto";
 import { BrowserWindow, app, dialog, ipcMain, net } from "electron";
-
-type DbStorageType = "json" | "ldb";
-type EffectiveStorage = "json" | "level";
+import { JsonShardStore, type ShardPageCursor } from "./jsonShardStore";
 
 interface AntiRecallConfig {
   mainColor: string;
   saveDb: boolean;
-  dbStorageType: DbStorageType;
   saveImagesToDataDir: boolean;
   enableShadow: boolean;
   enableTip: boolean;
@@ -25,9 +22,9 @@ interface AntiRecallConfig {
 }
 
 interface StorageStatus {
-  effective: EffectiveStorage;
-  requested: DbStorageType;
-  error?: string;
+  shardCount: number;
+  totalBytes: number;
+  recordCount: number;
 }
 
 interface RKeyData {
@@ -667,7 +664,8 @@ function safeStringify(value: unknown): string {
 }
 
 const jsonDbPath = path.join(dataDir, "qq-recalled-db.json");
-const levelDbPath = path.join(dataDir, "qq-recalled-db.ldb");
+const shardDir = path.join(dataDir, "recalled");
+const legacyShardDir = path.join(dataDir, "qq-recalled-db");
 const rkeyCachePath = path.join(dataDir, "rkey-cache.json");
 
 const imageDownloader = new ImageDownloader();
@@ -675,7 +673,6 @@ const imageDownloader = new ImageDownloader();
 const DEFAULT_CONFIG: AntiRecallConfig = {
   mainColor: "#ff6d6d",
   saveDb: false,
-  dbStorageType: "ldb",
   saveImagesToDataDir: false,
   enableShadow: true,
   enableTip: true,
@@ -690,10 +687,12 @@ const DEFAULT_CONFIG: AntiRecallConfig = {
 
 let config: AntiRecallConfig = { ...DEFAULT_CONFIG };
 
-let effectiveStorage: EffectiveStorage = "json";
-let levelDb: any = null;
-let jsonDb: Record<string, unknown> | null = null;
-let levelError: string | null = null;
+const jsonStore = new JsonShardStore({
+  dir: shardDir,
+  legacyFile: jsonDbPath,
+  legacyDir: legacyShardDir,
+  log: debugLog,
+});
 
 function writeDefaultConfig(): void {
   fs.writeFileSync(
@@ -703,140 +702,56 @@ function writeDefaultConfig(): void {
   );
 }
 
+/**
+ * 只保留已知字段并补齐缺省值。
+ *
+ * 顺带把废弃的键（比如 dbStorageType）从用户配置里剔掉——本版本起
+ * 存储后端只有分片 JSON 一种，留着那个键会让人以为还能切。
+ */
+function normalizeConfig(raw: Partial<AntiRecallConfig> | null): AntiRecallConfig {
+  const out = { ...DEFAULT_CONFIG };
+  if (!raw || typeof raw !== "object") return out;
+
+  for (const key of Object.keys(DEFAULT_CONFIG) as Array<keyof AntiRecallConfig>) {
+    const v = raw[key];
+    if (v == null) continue;
+    if (typeof v !== typeof DEFAULT_CONFIG[key]) continue;
+    (out as any)[key] = v;
+  }
+
+  if (!(out.maxMsgSaveLimit > 0)) out.maxMsgSaveLimit = DEFAULT_CONFIG.maxMsgSaveLimit;
+  if (!(out.deleteMsgCountPerTime > 0))
+    out.deleteMsgCountPerTime = DEFAULT_CONFIG.deleteMsgCountPerTime;
+  return out;
+}
+
 function readConfig(): AntiRecallConfig {
   if (!fs.existsSync(configPath)) {
     writeDefaultConfig();
     return { ...DEFAULT_CONFIG };
   }
-  return JSON.parse(fs.readFileSync(configPath, "utf-8")) as AntiRecallConfig;
+  try {
+    return normalizeConfig(
+      JSON.parse(fs.readFileSync(configPath, "utf-8")) as AntiRecallConfig,
+    );
+  } catch (e) {
+    debugLog("[config] 解析失败，回退默认值:", e);
+    return { ...DEFAULT_CONFIG };
+  }
 }
 
 function updateImageSaveDir(): void {
   imageDownloader.setSaveToDataDir(config.saveImagesToDataDir ? dataDir : null);
 }
 
-async function tryOpenLevelDb(): Promise<boolean> {
-  if (levelDb) return true;
-  if (config.dbStorageType !== "ldb") return false;
-
-  levelError = null;
-  try {
-    const mod = (await import("level")) as any;
-    const LevelCtor = mod.Level ?? mod.default;
-    levelDb = new LevelCtor(levelDbPath, { valueEncoding: "utf8" });
-    effectiveStorage = "level";
-    log("Using LevelDB storage:", levelDbPath);
-    return true;
-  } catch (e: any) {
-    levelError = e?.message ?? String(e);
-    log("LevelDB unavailable:", levelError);
-    return false;
-  }
-}
-
-function closeLevelDb(): void {
-  if (!levelDb) return;
-  try {
-    void levelDb.close?.();
-  } catch {
-    // ignore
-  }
-  levelDb = null;
-  effectiveStorage = "json";
-}
-
-async function ensureJsonDbLoaded(): Promise<void> {
-  if (jsonDb !== null) return;
-  try {
-    jsonDb = JSON.parse(fs.readFileSync(jsonDbPath, "utf-8")) as Record<
-      string,
-      unknown
-    >;
-  } catch {
-    jsonDb = {};
-  }
-}
-
-function flushJsonDb(): void {
-  if (effectiveStorage === "level") return;
-  if (!jsonDb) return;
-  fs.mkdirSync(path.dirname(jsonDbPath), { recursive: true });
-  fs.writeFileSync(jsonDbPath, JSON.stringify(jsonDb), "utf-8");
-}
-
-async function ensureStorageReady(): Promise<void> {
-  if (!config.saveDb) return;
-
-  if (config.dbStorageType === "ldb") {
-    const ok = await tryOpenLevelDb();
-    if (!ok) {
-      effectiveStorage = "json";
-      await ensureJsonDbLoaded();
-      log("LevelDB failed, using JSON storage");
-    }
-    return;
-  }
-
-  closeLevelDb();
-  effectiveStorage = "json";
-  await ensureJsonDbLoaded();
-}
-
 async function saveToDb(record: any): Promise<void> {
   if (!config.saveDb) return;
-  await ensureStorageReady();
-
-  if (effectiveStorage === "level" && levelDb) {
-    try {
-      await levelDb.get(record.id);
-    } catch {
-      await levelDb.put(record.id, JSON.stringify(record));
-    }
-    return;
-  }
-
-  if (!jsonDb) return;
-  if (!(record.id in jsonDb)) {
-    jsonDb[record.id] = record;
-    flushJsonDb();
-  }
+  await jsonStore.put(String(record.id), record);
 }
 
 async function readFromDb(id: string): Promise<any | null> {
   if (!config.saveDb) return null;
-  await ensureStorageReady();
-
-  if (effectiveStorage === "level" && levelDb) {
-    try {
-      const v = await levelDb.get(id);
-      return JSON.parse(v);
-    } catch {
-      return null;
-    }
-  }
-
-  if (!jsonDb) return null;
-  return (jsonDb as any)[id] ?? null;
-}
-
-async function readAllFromDb(): Promise<any[]> {
-  if (!config.saveDb) return [];
-  await ensureStorageReady();
-
-  if (effectiveStorage === "level" && levelDb) {
-    const items: any[] = [];
-    for await (const value of levelDb.values()) {
-      try {
-        items.push(JSON.parse(value));
-      } catch {
-        // Ignore malformed legacy records.
-      }
-    }
-    return items;
-  }
-
-  await ensureJsonDbLoaded();
-  return Object.values(jsonDb ?? {});
+  return await jsonStore.get(id);
 }
 
 const msgFlowCache: Array<{ id: string; sender?: string; msg: any }> = [];
@@ -1150,26 +1065,44 @@ function log(...args: unknown[]): void {
   debugLog("[RecallViewer] lifecycle:", ...args);
 }
 
+/** 按 id 去重并丢掉形状不对的记录；后出现的覆盖先出现的。 */
+function dedupeRecords(records: any[]): any[] {
+  const byId = new Map<string, any>();
+  for (const record of records) {
+    const id = String(record?.id ?? "");
+    if (id && record?.msg && typeof record.msg === "object")
+      byId.set(id, record);
+  }
+  return Array.from(byId.values());
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle("LiteLoader.anti_recall.getNowConfig", async () => config);
 
+  /**
+   * 倒序分页读取。第一页额外带上本次会话的内存缓存（最新的那批），
+   * 之后每页从更老的分片取。查看器边收边渲染，不用等全库读完。
+   */
   ipcMain.handle(
-    "LiteLoader.anti_recall.getRecalledMessages",
-    async () => {
-      const dbRecords = await readAllFromDb();
-      const mergedById = new Map<string, any>();
+    "LiteLoader.anti_recall.getRecalledPage",
+    async (_event, cursor?: ShardPageCursor, maxShards?: number) => {
+      const isFirstPage = cursor == null;
 
-      for (const record of [...dbRecords, ...recalledCache]) {
-        const id = String(record?.id ?? "");
-        if (id && record?.msg && typeof record.msg === "object") {
-          mergedById.set(id, record);
-        }
+      if (!config.saveDb) {
+        // 没开落盘时只有内存缓存这一份。
+        return {
+          records: isFirstPage ? dedupeRecords(recalledCache) : [],
+          cursor: { total: 0, remaining: 0 },
+          done: true,
+        };
       }
 
-      return Array.from(mergedById.values()).sort(
-        (a, b) =>
-          Number(b.msg?.msgTime ?? 0) - Number(a.msg?.msgTime ?? 0),
-      );
+      const page = await jsonStore.readPage(cursor, maxShards ?? 4);
+      const records = isFirstPage
+        ? dedupeRecords([...recalledCache, ...(page.records as any[])])
+        : dedupeRecords(page.records as any[]);
+
+      return { records, cursor: page.cursor, done: page.done };
     },
   );
 
@@ -1217,32 +1150,26 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     "LiteLoader.anti_recall.getStorageStatus",
     async (): Promise<StorageStatus> => {
-      if (config.saveDb && config.dbStorageType === "ldb")
-        await ensureStorageReady();
-      return {
-        effective: effectiveStorage,
-        requested: config.dbStorageType,
-        error: levelError ?? undefined,
-      };
+      if (!config.saveDb)
+        return { shardCount: 0, totalBytes: 0, recordCount: 0 };
+      await jsonStore.init();
+      return jsonStore.stats();
     },
   );
 
   ipcMain.handle(
     "LiteLoader.anti_recall.saveConfig",
     async (_event, newConfig: AntiRecallConfig) => {
-      const prevStorage = config.dbStorageType;
-      config = newConfig;
+      config = normalizeConfig(newConfig);
 
-      if (newConfig.dbStorageType !== "ldb" && prevStorage === "ldb")
-        closeLevelDb();
       updateImageSaveDir();
       imageDownloader.setNapcatSource(
-        newConfig.enableNapcatRkey ? (newConfig.napcatRkeyUrl ?? "") : "",
-        newConfig.enableNapcatRkey ? (newConfig.napcatRkeyToken ?? "") : "",
+        config.enableNapcatRkey ? config.napcatRkeyUrl : "",
+        config.enableNapcatRkey ? config.napcatRkeyToken : "",
       );
       broadcast("LiteLoader.anti_recall.mainWindow.repatchCss");
 
-      fs.writeFileSync(configPath, JSON.stringify(newConfig, null, 2), "utf-8");
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
     },
   );
 
@@ -1264,18 +1191,10 @@ function registerIpcHandlers(): void {
 
     if (res.response !== 0) return;
 
-    jsonDb = {};
+    // 分片目录、旧分片目录、旧版单文件和迁移备份都一起清掉。
+    jsonStore.clear();
+    recalledCache.length = 0;
     try {
-      if (levelDb) {
-        await levelDb.clear();
-        await levelDb.close();
-        levelDb = null;
-      }
-      closeLevelDb();
-
-      if (fs.existsSync(jsonDbPath)) fs.unlinkSync(jsonDbPath);
-      if (fs.existsSync(levelDbPath))
-        fs.rmSync(levelDbPath, { recursive: true, force: true });
       if (fs.existsSync(imagesDir))
         fs.rmSync(imagesDir, { recursive: true, force: true });
     } catch {
@@ -1292,29 +1211,12 @@ function registerIpcHandlers(): void {
   });
 }
 
-async function initStorageIfNeeded(): Promise<void> {
-  if (!config.saveDb) return;
-  await ensureStorageReady();
-}
-
 async function init(): Promise<void> {
   if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
   configPath = path.join(configDir, "config.json");
-  config = readConfig();
-
-  if (config.mainColor == null) config.mainColor = "#ff6d6d";
-  if (config.dbStorageType == null) config.dbStorageType = "json";
-  if (config.saveImagesToDataDir == null) config.saveImagesToDataDir = false;
-  if (config.enableShadow == null) config.enableShadow = true;
-  if (config.enableTip == null) config.enableTip = true;
-  if (config.enablePeriodicCleanup == null) config.enablePeriodicCleanup = true;
-  if (config.maxMsgSaveLimit == null) config.maxMsgSaveLimit = 10_000;
-  if (config.deleteMsgCountPerTime == null) config.deleteMsgCountPerTime = 500;
-  if (config.enableNapcatRkey == null) config.enableNapcatRkey = false;
-  if (config.napcatRkeyUrl == null) config.napcatRkeyUrl = "";
-  if (config.napcatRkeyToken == null) config.napcatRkeyToken = "";
+  config = readConfig(); // 已经过 normalizeConfig，缺省值和废弃键都处理好了
 
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
 
@@ -1324,7 +1226,8 @@ async function init(): Promise<void> {
     config.enableNapcatRkey ? config.napcatRkeyToken : "",
   );
   registerIpcHandlers();
-  await initStorageIfNeeded();
+  // 提前建索引/迁移，别等第一条撤回来了才做。
+  if (config.saveDb) await jsonStore.init();
 
   (qwqnt as any).main.hooks.whenBrowserWindowCreated.peek((w: BrowserWindow) =>
     patchWindow(w),

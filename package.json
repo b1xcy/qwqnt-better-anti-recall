@@ -7,16 +7,12 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "lint": "oxlint --fix --tsconfig ./tsconfig.json --type-aware src/**/*.js,src/**/*.ts",
-    "build": "vite build --mode main && node scripts/copy-runtime-deps.mjs && node scripts/rebuild-leveldown.mjs && vite build --mode preload && vite build --mode renderer"
+    "build": "vite build --mode main && vite build --mode preload && vite build --mode renderer"
   },
   "author": "accmo",
   "license": "MIT",
-  "dependencies": {
-    "level": "^7.0.1"
-  },
   "devDependencies": {
     "@electron-toolkit/tsconfig": "^2.0.0",
-    "@electron/rebuild": "^4.0.3",
     "@qwqnt/types": "github:qwqnt-community/types",
     "@types/node": "^25.3.0",
     "electron": "^40.6.0",

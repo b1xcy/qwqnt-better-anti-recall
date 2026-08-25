@@ -38,14 +38,38 @@ declare namespace PluginSettings {
   const renderer: IRenderer;
 }
 
+interface RecalledRecord {
+  id: string;
+  sender?: string;
+  msg: any;
+}
+
+interface ShardPageCursor {
+  total: number;
+  remaining: number;
+}
+
+interface RecalledPage {
+  records: RecalledRecord[];
+  cursor: ShardPageCursor;
+  done: boolean;
+}
+
 declare global {
   interface Window {
     anti_recall: {
       clearDb: () => Promise<void>;
       getNowConfig: <T = unknown>() => Promise<T>;
-      getRecalledMessages: () => Promise<Array<{ id: string; sender?: string; msg: any }>>;
+      getRecalledPage: (
+        cursor?: ShardPageCursor,
+        maxShards?: number,
+      ) => Promise<RecalledPage>;
       openRecallViewer: () => void;
-      getStorageStatus: () => Promise<{ effective: 'json' | 'level'; requested: 'json' | 'ldb'; error?: string }>;
+      getStorageStatus: () => Promise<{
+        shardCount: number;
+        totalBytes: number;
+        recordCount: number;
+      }>;
       saveConfig: <T = unknown>(newConfig: T) => Promise<void>;
       testNapcatRkey: (url: string, token: string) => Promise<{
         ok: boolean;
@@ -57,7 +81,10 @@ declare global {
       recallTipList: (callback: (_event: unknown, msgIds: string[]) => void) => void;
     };
     anti_recall_viewer?: {
-      getRecalledMessages: () => Promise<Array<{ id: string; sender?: string; msg: any }>>;
+      getRecalledPage: (
+        cursor?: ShardPageCursor,
+        maxShards?: number,
+      ) => Promise<RecalledPage>;
     };
   }
 }

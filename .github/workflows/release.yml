@@ -19,6 +19,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 需要完整历史和 tag 才能算出上一个 tag 到本次 tag 的 commit 区间
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -29,13 +32,52 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - name: Verify tag matches package.json version
+      # tag 为准：把 package.json 的 version 对齐到 tag，避免产物里带着旧版本号。
+      # 只改工作区，不提交回仓库。
+      - name: Sync package.json version from tag
         run: |
-          PKG_VERSION="v$(node -p "require('./package.json').version")"
-          if [ "$PKG_VERSION" != "${GITHUB_REF_NAME}" ]; then
-            echo "tag ${GITHUB_REF_NAME} != package.json version ${PKG_VERSION}"
-            exit 1
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf-8"));
+            const next = process.argv[1];
+            if (pkg.version !== next) {
+              console.log(`package.json version ${pkg.version} -> ${next}`);
+              pkg.version = next;
+              fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+            } else {
+              console.log(`package.json version already ${next}`);
+            }
+          ' "$TAG_VERSION"
+
+      - name: Collect commits since previous tag
+        id: changelog
+        run: |
+          CUR="${GITHUB_REF_NAME}"
+          # 找出祖先里最近的那个 tag；没有则从首个 commit 起算
+          PREV=$(git tag --sort=-v:refname | grep -v "^${CUR}$" | while read -r t; do
+            if git merge-base --is-ancestor "$t" "$CUR" 2>/dev/null; then echo "$t"; break; fi
+          done)
+
+          if [ -n "$PREV" ]; then
+            RANGE="${PREV}..${CUR}"
+            echo "range: $RANGE"
+          else
+            RANGE="$CUR"
+            echo "range: 从首个 commit 到 $CUR"
           fi
+
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo "## 本次改动"
+            echo
+            git log --no-merges --pretty='- %s (%h)' "$RANGE"
+            if [ -n "$PREV" ]; then
+              echo
+              echo "**完整对比**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${CUR}"
+            fi
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -43,16 +85,10 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # 防御性清理：若 @electron/rebuild 在 CI 上把平台专用的 leveldown 二进制
-      # 编进 node_modules/leveldown/build，node-gyp-build 运行时会优先加载
-      # build/Release 且不校验平台，导致其他平台加载失败。删掉后由 leveldown
-      # 自带的全平台 N-API prebuilds 接管，zip 在 Windows / macOS / Linux 均可用。
-      # 若 zip 中无此目录（rebuild 未产出），zip -d 返回非零，忽略即可。
-      - name: Strip CI-specific native binary from zip
-        run: zip -d qwqnt-better-anti-recall.zip 'node_modules/leveldown/build/*' 'node_modules/leveldown/build/*/*' || true
-
       - name: Create release and upload zip
         uses: softprops/action-gh-release@v2
         with:
           files: qwqnt-better-anti-recall.zip
+          # body 在前，GitHub 自动生成的 notes 追加在其后
+          body: ${{ steps.changelog.outputs.body }}
           generate_release_notes: true

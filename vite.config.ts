@@ -30,7 +30,6 @@ function viewerHtmlPlugin() {
 }
 
 const external = ['electron', ...builtinModules.flatMap(m => [m, `node:${m}`])];
-const runtimeExternal = ['level-party'];
 
 const BaseConfig = defineConfig({
   root: __dirname,
@@ -62,7 +61,7 @@ const configs = {
         fileName: () => 'index.cjs',
       },
       rollupOptions: {
-        external: [...external, ...runtimeExternal],
+        external,
       },
       target: 'node23',
     },

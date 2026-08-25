@@ -1,3 +1,5 @@
+import { loadRecalledPaged, type PagedRecord } from "../pagedLoader";
+
 document.body.innerHTML = `
   <div class="app">
     <section class="panel side">
@@ -15,7 +17,7 @@ function debugLog(message: string, detail?: unknown): void {
   console.log("[Anti-Recall Viewer]", message, detail ?? "");
 }
 
-type RecalledRecord = { id: string; sender?: string; msg: any };
+type RecalledRecord = PagedRecord;
 
 const chatListEl = document.querySelector<HTMLElement>("#chats")!;
 const messageListEl = document.querySelector<HTMLElement>("#messages")!;
@@ -23,7 +25,7 @@ const messageListEl = document.querySelector<HTMLElement>("#messages")!;
 const viewerApi = window.anti_recall_viewer;
 
 debugLog("loaded", {
-  hasApi: Boolean(viewerApi?.getRecalledMessages),
+  hasApi: Boolean(viewerApi?.getRecalledPage),
   href: location.href,
 });
 
@@ -133,57 +135,101 @@ function renderMessages(
   }
 }
 
+interface Chat {
+  label: string;
+  kind: string;
+  records: RecalledRecord[];
+}
+
+/** 用户选中的会话，跨分页重渲染时保持不变。 */
+let selectedPeer: string | null = null;
+
+function groupByChat(records: RecalledRecord[]): Map<string, Chat> {
+  const chats = new Map<string, Chat>();
+  for (const record of records) {
+    const peerUid = String(record.sender ?? record.msg?.peerUid ?? "unknown");
+    const chat = chats.get(peerUid) ?? {
+      kind: getChatTypeLabel(record.msg),
+      label: getPeerName(record.msg) || "未知会话",
+      records: [],
+    };
+    chat.records.push(record);
+    chats.set(peerUid, chat);
+  }
+  return chats;
+}
+
+/**
+ * 整体重建会话列表。
+ *
+ * 分页途中会被反复调用，所以要保住两样东西：用户选中的会话，以及两栏的
+ * 滚动位置——否则每来一页视图就跳回顶部。
+ */
+function renderChatList(records: RecalledRecord[], done: boolean): void {
+  const chats = groupByChat(records);
+  const chatScroll = chatListEl.scrollTop;
+  const msgScroll = messageListEl.scrollTop;
+
+  chatListEl.innerHTML = "";
+  chatListEl.className = "scroll";
+
+  const ordered = [...chats.entries()].sort(
+    (a, b) => b[1].records.length - a[1].records.length,
+  );
+
+  // 首页还没选过就默认选第一个，之后锁住不动。
+  selectedPeer ??= ordered[0]?.[0] ?? null;
+
+  let selectedButton: HTMLButtonElement | undefined;
+  for (const [peerUid, chat] of ordered) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "item";
+    button.title = `${chat.label}（${peerUid}）`;
+    button.innerHTML =
+      '<span class="tag"></span><span class="name"></span><span class="count"></span>';
+    (button.children[0] as HTMLElement).textContent = chat.kind;
+    (button.children[1] as HTMLElement).textContent = chat.label;
+    (button.children[2] as HTMLElement).textContent = String(chat.records.length);
+    button.addEventListener("click", () => {
+      selectedPeer = peerUid;
+      renderMessages(chat.records, button);
+    });
+    chatListEl.appendChild(button);
+    if (peerUid === selectedPeer) selectedButton = button;
+  }
+
+  if (!done) {
+    const loading = document.createElement("span");
+    loading.className = "empty";
+    loading.textContent = "加载更早的记录...";
+    chatListEl.appendChild(loading);
+  }
+
+  const selected = selectedPeer ? chats.get(selectedPeer) : undefined;
+  if (selected) renderMessages(selected.records, selectedButton);
+
+  chatListEl.scrollTop = chatScroll;
+  messageListEl.scrollTop = msgScroll;
+}
+
 async function load(): Promise<void> {
   try {
-    if (!viewerApi?.getRecalledMessages) {
+    if (!viewerApi?.getRecalledPage) {
       throw new Error("查看器 preload API 不可用");
     }
 
-    const records = await viewerApi.getRecalledMessages();
-    debugLog("records received", {
-      count: records.length,
-      sample: records[0],
+    const all = await loadRecalledPaged(viewerApi, (records, done) => {
+      debugLog("page", { count: records.length, done });
+      if (records.length) renderChatList(records, done);
     });
 
-    if (!records.length) {
+    if (!all.length) {
       chatListEl.className = "scroll empty";
       chatListEl.textContent = "暂无数据";
       messageListEl.className = "scroll empty";
       messageListEl.textContent = "请先开启存入数据库";
-      return;
     }
-
-    const chats = new Map<string, { label: string; kind: string; records: RecalledRecord[] }>();
-    for (const record of records) {
-      const peerUid = String(record.sender ?? record.msg?.peerUid ?? "unknown");
-      const chat = chats.get(peerUid) ?? {
-        kind: getChatTypeLabel(record.msg),
-        label: getPeerName(record.msg) || "未知会话",
-        records: [],
-      };
-      chat.records.push(record);
-      chats.set(peerUid, chat);
-    }
-
-    chatListEl.innerHTML = "";
-    chatListEl.className = "scroll";
-    let firstButton: HTMLButtonElement | undefined;
-    for (const [peerUid, chat] of [...chats.entries()].sort((a, b) => b[1].records.length - a[1].records.length)) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "item";
-      button.title = `${chat.label}（${peerUid}）`;
-      button.innerHTML = '<span class="tag"></span><span class="name"></span><span class="count"></span>';
-      (button.children[0] as HTMLElement).textContent = chat.kind;
-      (button.children[1] as HTMLElement).textContent = chat.label;
-      (button.children[2] as HTMLElement).textContent = String(chat.records.length);
-      button.addEventListener("click", () =>
-        renderMessages(chat.records, button),
-      );
-      chatListEl.appendChild(button);
-      firstButton ??= button;
-    }
-    renderMessages([...chats.values()][0].records, firstButton);
   } catch (error) {
     console.error("[Anti-Recall Viewer] load failed:", error);
     chatListEl.className = "scroll empty";
