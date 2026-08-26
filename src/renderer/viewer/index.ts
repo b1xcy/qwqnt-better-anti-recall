@@ -1,4 +1,5 @@
 import { loadRecalledPaged, type PagedRecord } from "../pagedLoader";
+import { bindDoubleClick } from "./lightbox";
 
 document.body.innerHTML = `
   <div class="app">
@@ -28,6 +29,8 @@ debugLog("loaded", {
   hasApi: Boolean(viewerApi?.getRecalledPage),
   href: location.href,
 });
+
+bindDoubleClick(messageListEl);
 
 function getChatTypeLabel(msg: any): string {
   const type = Number(msg?.chatType ?? 0);
@@ -100,6 +103,7 @@ function buildEntry(record: RecalledRecord): HTMLElement {
       const image = document.createElement("img");
       image.src = localImageUrl(source);
       image.alt = "加载失败";
+      image.title = "双击查看大图";
       image.addEventListener("error", () => image.remove());
       images.appendChild(image);
       imageCount += 1;
