@@ -23,14 +23,27 @@ body { margin: 0; background: #f2f2f2; color: #111; font-family: system-ui,-appl
 @media (prefers-color-scheme:dark) { .side{background:#1b1b1b;} .bubble{background:#262626;box-shadow:0 2px 8px rgba(0,0,0,.35);} }
 .content { margin:0;white-space:pre-wrap;word-break:break-word; }
 .tail { float:right;font-size:12px;margin-left:12px;opacity:.6; }
-.images { display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px; }
-.images img { border-radius:6px;height:132px;object-fit:cover;width:132px;cursor:zoom-in; }
+.media { display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px; }
+.media > img { border-radius:6px;height:132px;object-fit:cover;width:132px;cursor:zoom-in; }
+
+/* 视频封面 */
+.media-video { background:rgba(127,127,127,.16);border:0;border-radius:6px;cursor:pointer;display:block;height:132px;overflow:hidden;padding:0;position:relative;width:132px; }
+.media-video > img { display:block;height:100%;object-fit:cover;width:100%; }
+.media-play { align-items:center;background:rgba(0,0,0,.5);border-radius:50%;color:#fff;display:flex;font-size:15px;height:38px;justify-content:center;left:50%;line-height:1;padding-left:2px;position:absolute;top:50%;transform:translate(-50%,-50%);width:38px; }
+.media-play.is-missing { font-size:14px;padding-left:0;opacity:.75; }
+.media-video:hover .media-play { background:rgba(0,0,0,.68); }
+.media-duration { background:rgba(0,0,0,.55);border-radius:3px;bottom:4px;color:#fff;font-size:11px;line-height:15px;padding:0 4px;position:absolute;right:4px; }
 
 /* 大图层 */
 .lightbox { position:fixed;inset:0;z-index:9999;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.82);user-select:none; }
 .lightbox.open { display:flex; }
 .lightbox img { max-width:92vw;max-height:88vh;border-radius:2px;box-shadow:0 8px 40px rgba(0,0,0,.5);transform-origin:center center;will-change:transform;cursor:grab;-webkit-user-drag:none; }
 .lightbox img.dragging { cursor:grabbing; }
+.lightbox img[hidden] { display:none; }
+.lightbox video { max-width:92vw;max-height:88vh;background:#000;border-radius:2px;box-shadow:0 8px 40px rgba(0,0,0,.5);outline:none; }
+.lightbox video[hidden] { display:none; }
+.lightbox-notice { bottom:26px;color:#ffffffd9;font-size:13px;left:0;margin:0;position:absolute;right:0;text-align:center; }
+.lightbox-notice[hidden] { display:none; }
 .lightbox-bar { position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:12px;padding:10px 14px;color:#fff;font-size:12px;background:linear-gradient(rgba(0,0,0,.45),transparent); }
 .lightbox-count { opacity:.85;font-variant-numeric:tabular-nums; }
 .lightbox-hint { opacity:.6;margin-left:auto; }

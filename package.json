@@ -7,7 +7,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "lint": "oxlint --fix --tsconfig ./tsconfig.json --type-aware src/**/*.js,src/**/*.ts",
-    "build": "vite build --mode main && vite build --mode preload && vite build --mode renderer"
+    "build": "vite build --mode main && vite build --mode preload && vite build --mode preloadViewer && vite build --mode renderer"
   },
   "author": "accmo",
   "license": "MIT",

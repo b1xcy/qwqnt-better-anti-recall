@@ -1,5 +1,5 @@
 import { loadRecalledPaged, type PagedRecord } from "../pagedLoader";
-import { bindDoubleClick } from "./lightbox";
+import { bindMedia } from "./lightbox";
 
 document.body.innerHTML = `
   <div class="app">
@@ -30,7 +30,7 @@ debugLog("loaded", {
   href: location.href,
 });
 
-bindDoubleClick(messageListEl);
+bindMedia(messageListEl);
 
 function getChatTypeLabel(msg: any): string {
   const type = Number(msg?.chatType ?? 0);
@@ -67,13 +67,97 @@ function extractText(msg: any): string {
     .trim();
 }
 
-function localImageUrl(filePath: string): string {
+function localFileUrl(filePath: string): string {
   const normalized = filePath
     .replace(/\\/g, "/")
     .replace(/^([A-Za-z]):/, (_match, drive: string) => drive.toLowerCase() + ":");
   return `file:///${encodeURIComponent(normalized)
     .replace(/%2F/gi, "/")
     .replace(/%3A/gi, ":")}`;
+}
+
+const VIDEO_EXT_RE = /\.(mp4|mov|mkv|webm|avi|flv|m4v|3gp|wmv)$/i;
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
+
+/**
+ * 封面路径。
+ *
+ * 主进程已经在 annotateForViewer 里解析好写进 thumbPathResolved 了（内存里的
+ * 记录是 Map、库里读的是普通对象，形状不一，统一在主进程判掉）。这里保留对
+ * 原始 thumbPath 的兜底，只为兼容还没走过新逻辑的记录。
+ */
+function pickThumb(video: any): string {
+  const resolved = video?.thumbPathResolved;
+  if (typeof resolved === "string" && resolved) return resolved;
+  const raw = video?.thumbPath;
+  if (typeof raw === "string") return raw;
+  if (raw && typeof raw === "object") {
+    for (const v of Object.values(raw as Record<string, unknown>))
+      if (typeof v === "string" && v) return v;
+  }
+  return "";
+}
+
+/**
+ * 视频本体路径，空串表示当时没下载过。
+ *
+ * videoFileResolved 是主进程 stat 过的结果，空串是「查过，不存在」这个明确
+ * 结论。所以只有这个字段完全缺失时才回退到 filePath —— 那是没走过新逻辑的
+ * 老记录，filePath 存在与否未知。
+ */
+function pickVideoFile(video: any): string {
+  const resolved = video?.videoFileResolved;
+  if (typeof resolved === "string") return resolved;
+  const filePath = video?.filePath;
+  return typeof filePath === "string" && VIDEO_EXT_RE.test(filePath)
+    ? filePath
+    : "";
+}
+
+function formatDuration(seconds: number): string {
+  if (!(seconds > 0)) return "";
+  const total = Math.round(seconds);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/** 视频封面按钮：有留存文件就能点开播，没有就只当封面看。 */
+function buildVideoTile(video: any): HTMLElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "media-video";
+
+  const file = pickVideoFile(video);
+  const thumb = pickThumb(video);
+  if (file) button.dataset.video = localFileUrl(file);
+  if (thumb) button.dataset.poster = localFileUrl(thumb);
+  // 撤回后内核不会删文件，但撤回前没点开过的视频从来就没下载到本地，
+  // 而撤回后又没法再向内核索取。所以这里如实说明，不给一个点了转不动的播放键。
+  button.title = file ? "点击播放" : "撤回前没有下载过这个视频，无法播放";
+
+  if (thumb) {
+    const poster = document.createElement("img");
+    poster.src = localFileUrl(thumb);
+    poster.alt = "";
+    poster.addEventListener("error", () => poster.remove());
+    button.appendChild(poster);
+  }
+
+  const badge = document.createElement("span");
+  badge.className = file ? "media-play" : "media-play is-missing";
+  badge.textContent = file ? "▶" : "✕";
+  button.appendChild(badge);
+
+  const duration = formatDuration(Number(video?.fileTime ?? 0));
+  if (duration) {
+    const label = document.createElement("span");
+    label.className = "media-duration";
+    label.textContent = duration;
+    button.appendChild(label);
+  }
+
+  return button;
 }
 
 function buildEntry(record: RecalledRecord): HTMLElement {
@@ -89,24 +173,29 @@ function buildEntry(record: RecalledRecord): HTMLElement {
   const content = document.createElement("p");
   content.className = "content";
 
-  const images = document.createElement("div");
-  images.className = "images";
-  let imageCount = 0;
+  const media = document.createElement("div");
+  media.className = "media";
+  let mediaCount = 0;
   for (const element of Array.isArray(record.msg?.elements) ? record.msg.elements : []) {
     const pic = element?.picElement;
-    const source =
-      pic?.sourcePath || Object.values(pic?.thumbPath ?? {})[0] || "";
-    if (
-      typeof source === "string" &&
-      /\.(png|jpe?g|gif|webp|bmp)$/i.test(source)
-    ) {
-      const image = document.createElement("img");
-      image.src = localImageUrl(source);
-      image.alt = "加载失败";
-      image.title = "双击查看大图";
-      image.addEventListener("error", () => image.remove());
-      images.appendChild(image);
-      imageCount += 1;
+    if (pic) {
+      const source =
+        pic.sourcePath || Object.values(pic.thumbPath ?? {})[0] || "";
+      if (typeof source === "string" && IMAGE_EXT_RE.test(source)) {
+        const image = document.createElement("img");
+        image.src = localFileUrl(source);
+        image.alt = "加载失败";
+        image.title = "双击查看大图";
+        image.addEventListener("error", () => image.remove());
+        media.appendChild(image);
+        mediaCount += 1;
+      }
+      continue;
+    }
+
+    if (element?.videoElement) {
+      media.appendChild(buildVideoTile(element.videoElement));
+      mediaCount += 1;
     }
   }
 
@@ -116,7 +205,7 @@ function buildEntry(record: RecalledRecord): HTMLElement {
   tail.textContent = time ? new Date(time * 1000).toLocaleString() : "";
 
   content.textContent = extractText(record.msg) || "不支持的消息类型";
-  if (imageCount) bubble.appendChild(images);
+  if (mediaCount) bubble.appendChild(media);
   content.appendChild(tail);
   bubble.appendChild(content);
   item.append(sender, bubble);

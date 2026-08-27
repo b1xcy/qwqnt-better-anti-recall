@@ -13,12 +13,26 @@ const DRAG_THRESHOLD = 4;
 
 let overlay: HTMLElement | null = null;
 let imgEl: HTMLImageElement | null = null;
+let videoEl: HTMLVideoElement | null = null;
+let noticeEl: HTMLElement | null = null;
 let countEl: HTMLElement | null = null;
+let hintEl: HTMLElement | null = null;
 let prevBtn: HTMLButtonElement | null = null;
 let nextBtn: HTMLButtonElement | null = null;
 
-/** 打开时快照的图片地址列表——分页重渲染不应打断正在看的大图。 */
-let sources: string[] = [];
+export interface MediaSource {
+  kind: "image" | "video";
+  /** 图片地址，或视频文件地址；视频没留存到本地时为空。 */
+  url: string;
+  /** 视频封面，用于文件缺失时至少还能看到一帧。 */
+  poster?: string;
+}
+
+const IMAGE_HINT = "滚轮缩放 · 拖拽平移 · ← → 切换 · 双击复位 · Esc 关闭";
+const VIDEO_HINT = "← → 切换 · Esc 关闭";
+
+/** 打开时快照的媒体列表——分页重渲染不应打断正在看的大图。 */
+let sources: MediaSource[] = [];
 let index = 0;
 
 let scale = 1;
@@ -54,19 +68,35 @@ function build(): void {
   bar.className = "lightbox-bar";
   countEl = document.createElement("span");
   countEl.className = "lightbox-count";
-  const hint = document.createElement("span");
-  hint.className = "lightbox-hint";
-  hint.textContent = "滚轮缩放 · 拖拽平移 · ← → 切图 · 双击复位 · Esc 关闭";
+  hintEl = document.createElement("span");
+  hintEl.className = "lightbox-hint";
+  hintEl.textContent = IMAGE_HINT;
   const closeBtn = document.createElement("button");
   closeBtn.type = "button";
   closeBtn.className = "lightbox-close";
   closeBtn.textContent = "关闭";
   closeBtn.addEventListener("click", close);
-  bar.append(countEl, hint, closeBtn);
+  bar.append(countEl, hintEl, closeBtn);
 
   imgEl = document.createElement("img");
   imgEl.alt = "";
   imgEl.draggable = false;
+
+  videoEl = document.createElement("video");
+  videoEl.controls = true;
+  videoEl.preload = "metadata";
+  videoEl.hidden = true;
+  // 点视频不该关掉遮罩，否则一碰进度条就整个关了。
+  videoEl.addEventListener("click", (e) => e.stopPropagation());
+  videoEl.addEventListener("dblclick", (e) => e.stopPropagation());
+  videoEl.addEventListener("error", () => {
+    if (!videoEl?.hidden)
+      showNotice("这个视频无法播放，可能是 QQ 用了浏览器不支持的编码（如 H.265）。");
+  });
+
+  noticeEl = document.createElement("p");
+  noticeEl.className = "lightbox-notice";
+  noticeEl.hidden = true;
 
   prevBtn = document.createElement("button");
   prevBtn.type = "button";
@@ -86,7 +116,7 @@ function build(): void {
     step(1);
   });
 
-  overlay.append(bar, prevBtn, imgEl, nextBtn);
+  overlay.append(bar, prevBtn, imgEl, videoEl, noticeEl, nextBtn);
   document.body.appendChild(overlay);
 
   // 每次按下都重置拖拽标记。挂在 overlay 上（事件从 img 冒泡上来），
@@ -185,19 +215,54 @@ function step(delta: number): void {
   show(index + delta);
 }
 
+function showNotice(text: string): void {
+  if (!noticeEl) return;
+  noticeEl.textContent = text;
+  noticeEl.hidden = false;
+}
+
 function show(nextIndex: number): void {
-  if (!imgEl || !countEl) return;
+  if (!imgEl || !videoEl || !countEl || !noticeEl) return;
   if (nextIndex < 0 || nextIndex >= sources.length) return;
 
   index = nextIndex;
-  imgEl.src = sources[index];
-  resetTransform();
+  const media = sources[index];
+
+  // 切走时一定要停掉上一个视频，否则关掉遮罩后声音还在放。
+  videoEl.pause();
+  videoEl.removeAttribute("src");
+  noticeEl.hidden = true;
+
+  if (media.kind === "video" && media.url) {
+    imgEl.hidden = true;
+    imgEl.src = "";
+    videoEl.hidden = false;
+    if (media.poster) videoEl.poster = media.poster;
+    else videoEl.removeAttribute("poster");
+    videoEl.src = media.url;
+    void videoEl.play().catch(() => {
+      // 自动播放被拦就算了，用户点一下 controls 就行。
+    });
+  } else {
+    videoEl.hidden = true;
+    imgEl.hidden = false;
+    // 视频没留存下来时退化成看封面；连封面都没有就只剩提示。
+    const fallback = media.kind === "video" ? (media.poster ?? "") : media.url;
+    if (fallback) imgEl.src = fallback;
+    else imgEl.removeAttribute("src");
+    if (media.kind === "video")
+      showNotice("撤回前没有下载过这个视频，只能看到封面。");
+    resetTransform();
+  }
+
+  if (hintEl)
+    hintEl.textContent = videoEl.hidden ? IMAGE_HINT : VIDEO_HINT;
   countEl.textContent = `${index + 1} / ${sources.length}`;
   if (prevBtn) prevBtn.hidden = index === 0;
   if (nextBtn) nextBtn.hidden = index === sources.length - 1;
 }
 
-export function open(list: string[], startIndex: number): void {
+export function open(list: MediaSource[], startIndex: number): void {
   if (!list.length) return;
   build();
   sources = [...list];
@@ -208,27 +273,56 @@ export function open(list: string[], startIndex: number): void {
 export function close(): void {
   overlay?.classList.remove("open");
   if (imgEl) imgEl.src = "";
+  if (videoEl) {
+    videoEl.pause();
+    videoEl.removeAttribute("src");
+  }
   sources = [];
 }
 
+/** 图片和视频封面按 DOM 顺序排在一起，左右键就能在一条消息的媒体间连着翻。 */
+const MEDIA_SELECTOR = ".media > img, .media > .media-video";
+
+function readMedia(el: Element): MediaSource {
+  if (el instanceof HTMLImageElement) return { kind: "image", url: el.src };
+  return {
+    kind: "video",
+    url: el.getAttribute("data-video") ?? "",
+    poster: el.getAttribute("data-poster") ?? undefined,
+  };
+}
+
+function openFrom(container: HTMLElement, target: Element): void {
+  const all = [...container.querySelectorAll(MEDIA_SELECTOR)];
+  const at = all.indexOf(target);
+  if (at === -1) return;
+  open(all.map(readMedia), at);
+}
+
 /**
- * 用事件委托绑双击：分页会不断重建消息列表，逐个 img 绑监听会漏掉后来的。
+ * 用事件委托：分页会不断重建消息列表，逐个元素绑监听会漏掉后来的。
+ *
+ * 图片沿用双击（避免和选词冲突），视频封面本身是个按钮，单击就播。
  */
-export function bindDoubleClick(container: HTMLElement): void {
+export function bindMedia(container: HTMLElement): void {
+  container.addEventListener("click", (e) => {
+    const button = (e.target as HTMLElement | null)?.closest<HTMLElement>(
+      ".media-video",
+    );
+    if (!button) return;
+    e.preventDefault();
+    openFrom(container, button);
+  });
+
   container.addEventListener("dblclick", (e) => {
     const target = e.target as HTMLElement | null;
+    // 视频走上面的单击分支，这里别再开一次。
+    if (target?.closest(".media-video")) return;
     if (!(target instanceof HTMLImageElement)) return;
 
     e.preventDefault();
     getSelection()?.removeAllRanges();
-
-    const all = [...container.querySelectorAll<HTMLImageElement>(".images img")];
-    const at = all.indexOf(target);
-    if (at === -1) return;
-    open(
-      all.map((x) => x.src),
-      at,
-    );
+    openFrom(container, target);
   });
 
   document.addEventListener("keydown", onKeyDown);

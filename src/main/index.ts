@@ -5,6 +5,12 @@ import https from "node:https";
 import crypto from "node:crypto";
 import { BrowserWindow, app, dialog, ipcMain, net } from "electron";
 import { JsonShardStore, type ShardPageCursor } from "./jsonShardStore";
+import {
+  annotateForViewer,
+  normalizeForStorage,
+  restoreForKernel,
+} from "./videoMedia";
+import { CH, CH_MAIN } from "../shared/channels";
 
 interface AntiRecallConfig {
   mainColor: string;
@@ -670,6 +676,7 @@ const rkeyCachePath = path.join(dataDir, "rkey-cache.json");
 
 const imageDownloader = new ImageDownloader();
 
+
 const DEFAULT_CONFIG: AntiRecallConfig = {
   mainColor: "#ff6d6d",
   saveDb: false,
@@ -744,9 +751,13 @@ function updateImageSaveDir(): void {
   imageDownloader.setSaveToDataDir(config.saveImagesToDataDir ? dataDir : null);
 }
 
+
 async function saveToDb(record: any): Promise<void> {
   if (!config.saveDb) return;
-  await jsonStore.put(String(record.id), record);
+  // 落盘前把 videoElement.thumbPath 从 Map 换成普通对象。
+  // Map 过 JSON.stringify 会变成 {}，那正是「重启后封面全丢」的根因。
+  // 用返回的副本存盘——record 本身是 msgFlowCache 里的内核原件，不能动。
+  await jsonStore.put(String(record.id), normalizeForStorage(record));
 }
 
 async function readFromDb(id: string): Promise<any | null> {
@@ -826,6 +837,12 @@ function patchWindow(win: BrowserWindow): void {
     const ses = win.webContents.session as any;
     if (ses && !ses.__antiRecallRkeyHook) {
       ses.__antiRecallRkeyHook = true;
+      // 注意：每个 session 只能注册一个 onBeforeRequest，后注册的会顶掉前面的。
+      //
+      // 实测（QQ 新版 AIO）：内核读本地媒体走的是 appimg:// 协议，视频下载也
+      // 不经 Electron 网络栈——放宽到 <all_urls> 观察过一轮，14 个 host 里没有
+      // 任何 CDN。所以这个 hook 在当前版本上大概率抓不到 rkey，留着是为了兼容
+      // 那些确实走 HTTP 的版本，真正可靠的来源是设置里的 NapCat RKey。
       ses.webRequest.onBeforeRequest(
         {
           urls: [
@@ -855,6 +872,8 @@ function patchWindow(win: BrowserWindow): void {
     if (i !== -1) patchedWindows.splice(i, 1);
   });
 
+  // __qqntim_original_object 是 qwqnt-ipc-interceptor 挂上来的，名字带 qqntim
+  // 是它的历史，不是本插件的遗留——**不要**改名，那是外部约定。
   const originalSend: any =
     wc.__qqntim_original_object?.send ?? wc.send.bind(wc);
 
@@ -917,6 +936,10 @@ function patchWindow(win: BrowserWindow): void {
             if (record?.msg && typeof record.msg === "object") {
               const recovered = { ...record.msg, isOnlineMsg: true };
               await imageDownloader.downloadPic(recovered);
+              // 从库里读回来的记录 thumbPath 是普通对象（或早期存坏的 {}），
+              // 渲染层按内核约定读 Map，所以补回 Map 形态；封面路径不在了
+              // 就用 videoMd5 反推。这是重启后封面能回来的关键。
+              restoreForKernel(recovered);
               log("Detected recall, intercepted and recovered from " + source);
 
               for (const k in recovered) {
@@ -955,7 +978,7 @@ function patchWindow(win: BrowserWindow): void {
           }
 
           wc.send(
-            "LiteLoader.anti_recall.mainWindow.recallTipList",
+            CH_MAIN.recallTipList,
             recalledCache
               .filter((x) => x.sender === peerUid || x?.sender == null)
               .map((x) => x.id),
@@ -989,10 +1012,11 @@ function patchWindow(win: BrowserWindow): void {
               (config.isAntiRecallSelfMsg || !revoke.isSelfOperate)
             ) {
               const recallId = String(recallMsg.msgId);
-              wc.send("LiteLoader.anti_recall.mainWindow.recallTip", recallId);
+              wc.send(CH_MAIN.recallTip, recallId);
 
               const cached = msgFlowCache.find((x) => x.id === recallId);
               const already = recalledCache.find((x) => x.id === recallId);
+
               if (cached && !already) {
                 recalledCache.push(cached);
                 if (config.saveDb) await saveToDb(cached);
@@ -1044,10 +1068,11 @@ function patchWindow(win: BrowserWindow): void {
         }
       }
     } catch (e) {
+      // 别把用户导到上游 LiteLoader 仓库去报这里的 bug。
       log(
-        "NTQQ Anti-Recall Error: ",
+        "Anti-Recall 拦截出错: ",
         e,
-        "Please report this to https://github.com/xh321/LiteLoaderQQNT-Anti-Recall/issues, thank you",
+        "请到 https://github.com/b1xcy/qwqnt-better-anti-recall/issues 反馈",
       );
     }
 
@@ -1065,6 +1090,7 @@ function log(...args: unknown[]): void {
   debugLog("[RecallViewer] lifecycle:", ...args);
 }
 
+
 /** 按 id 去重并丢掉形状不对的记录；后出现的覆盖先出现的。 */
 function dedupeRecords(records: any[]): any[] {
   const byId = new Map<string, any>();
@@ -1076,22 +1102,44 @@ function dedupeRecords(records: any[]): any[] {
   return Array.from(byId.values());
 }
 
+/**
+ * 给查看器的记录补上解析好的封面/视频路径。
+ *
+ * 内存里的记录 thumbPath 是 Map，库里读回来的是普通对象或空 {}，让查看器
+ * 自己猜形状迟早再踩一次坑。统一在主进程解析成字符串字段。
+ *
+ * 这里可以就地改：走到查看器的记录要么是库里读出来的临时对象，要么是
+ * dedupeRecords 之后的引用，补两个字符串字段不影响内核那份数据。
+ */
+function annotateRecordsForViewer(records: any[]): any[] {
+  for (const record of records) {
+    try {
+      annotateForViewer(record?.msg);
+    } catch {
+      // 单条解析失败不该毁掉整页
+    }
+  }
+  return records;
+}
+
 function registerIpcHandlers(): void {
-  ipcMain.handle("LiteLoader.anti_recall.getNowConfig", async () => config);
+  ipcMain.handle(CH.getNowConfig, async () => config);
 
   /**
    * 倒序分页读取。第一页额外带上本次会话的内存缓存（最新的那批），
    * 之后每页从更老的分片取。查看器边收边渲染，不用等全库读完。
    */
   ipcMain.handle(
-    "LiteLoader.anti_recall.getRecalledPage",
+    CH.getRecalledPage,
     async (_event, cursor?: ShardPageCursor, maxShards?: number) => {
       const isFirstPage = cursor == null;
 
       if (!config.saveDb) {
         // 没开落盘时只有内存缓存这一份。
         return {
-          records: isFirstPage ? dedupeRecords(recalledCache) : [],
+          records: isFirstPage
+            ? annotateRecordsForViewer(dedupeRecords(recalledCache))
+            : [],
           cursor: { total: 0, remaining: 0 },
           done: true,
         };
@@ -1102,11 +1150,15 @@ function registerIpcHandlers(): void {
         ? dedupeRecords([...recalledCache, ...(page.records as any[])])
         : dedupeRecords(page.records as any[]);
 
-      return { records, cursor: page.cursor, done: page.done };
+      return {
+        records: annotateRecordsForViewer(records),
+        cursor: page.cursor,
+        done: page.done,
+      };
     },
   );
 
-  ipcMain.on("LiteLoader.anti_recall.openRecallViewer", () => {
+  ipcMain.on(CH.openRecallViewer, () => {
     if (recallViewerWindow && !recallViewerWindow.isDestroyed()) {
       recallViewerWindow.focus();
       return;
@@ -1148,7 +1200,7 @@ function registerIpcHandlers(): void {
     });
   });
   ipcMain.handle(
-    "LiteLoader.anti_recall.getStorageStatus",
+    CH.getStorageStatus,
     async (): Promise<StorageStatus> => {
       if (!config.saveDb)
         return { shardCount: 0, totalBytes: 0, recordCount: 0 };
@@ -1158,7 +1210,7 @@ function registerIpcHandlers(): void {
   );
 
   ipcMain.handle(
-    "LiteLoader.anti_recall.saveConfig",
+    CH.saveConfig,
     async (_event, newConfig: AntiRecallConfig) => {
       config = normalizeConfig(newConfig);
 
@@ -1167,20 +1219,20 @@ function registerIpcHandlers(): void {
         config.enableNapcatRkey ? config.napcatRkeyUrl : "",
         config.enableNapcatRkey ? config.napcatRkeyToken : "",
       );
-      broadcast("LiteLoader.anti_recall.mainWindow.repatchCss");
+      broadcast(CH_MAIN.repatchCss);
 
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
     },
   );
 
   ipcMain.handle(
-    "LiteLoader.anti_recall.testNapcatRkey",
+    CH.testNapcatRkey,
     async (_event, url: string, token: string) => {
       return await imageDownloader.testNapcatRkey(url, token);
     },
   );
 
-  ipcMain.handle("LiteLoader.anti_recall.clearDb", async () => {
+  ipcMain.handle(CH.clearDb, async () => {
     const res = await dialog.showMessageBox({
       type: "warning",
       title: "警告",

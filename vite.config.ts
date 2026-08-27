@@ -69,6 +69,14 @@ const configs = {
       platform: 'node',
     },
   }),
+  // preload 必须每个入口单独 build。
+  //
+  // 两个入口放在同一次 build 里，只要它们 import 同一个模块
+  // （src/shared/channels.ts），rollup 就会把它抽成共享 chunk，产出
+  // `require('./channels-xxx.cjs')`。而 QwQNT 的 preload 跑在 Electron 沙箱里，
+  // require 是 preloadRequire——它解析不了相对路径的兄弟文件，加载直接失败：
+  //   Error: module not found: ./channels-C7ITEqZk.cjs
+  // 单入口 build 没有「共享」可言，模块会被内联进各自的产物。
   preload: defineConfig({
     ...BaseConfig,
 
@@ -82,11 +90,33 @@ const configs = {
       minify: true,
       outDir: resolve(OUTPUT_DIR, './preload'),
       lib: {
-        entry: {
-          index: resolve(SRC_DIR, './preload/index.ts'),
-          recallMsgViewer: resolve(SRC_DIR, './preload/recallMsgViewer.ts'),
-        },
+        entry: resolve(SRC_DIR, './preload/index.ts'),
         formats: [ 'cjs' ],
+        fileName: () => 'index.cjs',
+      },
+      rollupOptions: {
+        external,
+      },
+    },
+  }),
+  preloadViewer: defineConfig({
+    ...BaseConfig,
+
+    plugins: [
+      viteOxlint({
+        includes: ['src/**/*.ts'],
+        fix: true,
+      }),
+    ],
+    build: {
+      // 跟上一次 preload build 输出到同一目录，别把 index.cjs 清掉。
+      emptyOutDir: false,
+      minify: true,
+      outDir: resolve(OUTPUT_DIR, './preload'),
+      lib: {
+        entry: resolve(SRC_DIR, './preload/recallMsgViewer.ts'),
+        formats: [ 'cjs' ],
+        fileName: () => 'recallMsgViewer.cjs',
       },
       rollupOptions: {
         external,

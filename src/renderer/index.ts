@@ -622,6 +622,24 @@ async function applyCssFromConfig(): Promise<void> {
 
     .recalledNoMargin { margin-top: 0px !important; }
 
+    /*
+     * 解掉撤回气泡自身链路上的裁剪。
+     *
+     * 实测（新版 AIO）祖先链是：
+     *   message-content__wrapper → message-container → message → ml-item
+     *   → ml-list → virtual-scroll-area → ml-root → ml-area
+     * 只有最后两层是 overflow:hidden，而它们是聊天列表的滚动视口——那是应该
+     * 裁的（也只裁可视区边缘），绝不能改成 visible，否则滚动直接坏掉。
+     *
+     * 真正需要解的是气泡内部自己带 overflow:hidden 的那种，比如文件消息的
+     * .file-message--content。用 :has() 限定在含撤回气泡的 ml-item 内，
+     * 不影响其他消息。
+     */
+    .ml-item:has(.message-content-recalled-parent) .file-message--content,
+    .message-content-recalled-parent .file-message--content {
+      overflow: visible !important;
+    }
+
     .message-content-recalled-parent.forward-msg,
     .message-content-recalled-parent.multi-forward-msg {
       margin: 4px 3px 25px;
@@ -767,6 +785,8 @@ async function markRecalledInView(): Promise<void> {
         if (!fallback)
           fallback = item.querySelector<HTMLElement>(".file-message--content");
         if (fallback) await markRecalled(fallback);
+        // 老 AIO 的选择器全落空 —— 新版 AIO 的 DOM 里那些 id 约定不存在。
+        else await markRecalledInNewAio(item);
       }
     } catch (e) {
       console.log("[Anti-Recall]", "反撤回消息时出错", e);
@@ -824,7 +844,17 @@ async function markRecalledById(msgId: string): Promise<void> {
   const bySelector = document.querySelector<HTMLElement>(
     `.ml-item[id='${msgId}'] .msg-content-container`,
   );
-  if (bySelector) await markRecalled(bySelector);
+  if (bySelector) {
+    await markRecalled(bySelector);
+    return;
+  }
+
+  // 老选择器全落空，走新版 AIO 那套。实时路径没命中不一定是问题：气泡
+  // 可能还没渲染出来，之后 markRecalledInView 会再补一次。
+  const item = document.querySelector<HTMLElement>(
+    `.ml-item[id='${CSS.escape(msgId)}']`,
+  );
+  if (item) await markRecalledInNewAio(item);
 }
 
 async function markForwardedMessage(node: HTMLElement, msgId: string): Promise<void> {
@@ -841,6 +871,52 @@ async function markForwardedMessage(node: HTMLElement, msgId: string): Promise<v
   });
 
   await markRecalled(bubble);
+}
+
+/**
+ * 新版 AIO（is-new-aio="true"）下找气泡。
+ *
+ * 上游那套选择器全是老 AIO 的 id 约定（`<id>-msgContent`、
+ * `<id>-msgContainerMsgContent` 之类），新 AIO 的 DOM 里一个都不存在——它是
+ * Vue 组件 + scoped CSS，只给 class 不给这些 id。所以阴影对**所有**消息类型
+ * 都落不下来，不只是视频。
+ *
+ * 实测新 AIO 的结构（撤回的视频/图片消息）：
+ *   div.ml-item#<msgId>
+ *     div.message.vue-component            is-new-aio="true"
+ *       div.message-container.vue-component
+ *         span.avatar-span
+ *         div.message-content__wrapper     ← 气泡在这里
+ *
+ * `message-content__wrapper` 这个类名现有 CSS 本来就在管，所以按 class 特征
+ * 找就够了，不需要另写样式。
+ */
+function findBubbleInNewAio(item: HTMLElement): HTMLElement | null {
+  for (const sel of [
+    "[class*='message-content']",
+    "[class*='msg-content']",
+    "[class*='message__main']",
+    "[class*='bubble']",
+  ]) {
+    const found = item.querySelector<HTMLElement>(sel);
+    if (found) return found;
+  }
+
+  // 再兜一层：message-container 里排除头像和时间戳，取第一个有实际尺寸的块。
+  const container = item.querySelector<HTMLElement>("[class*='message-container']");
+  for (const child of container?.children ?? []) {
+    const cls = (child.className || "").toString();
+    if (/avatar|timestamp|checkbox|multi-select/i.test(cls)) continue;
+    const rect = (child as HTMLElement).getBoundingClientRect();
+    if (rect.width < 8 || rect.height < 8) continue;
+    return child as HTMLElement;
+  }
+  return null;
+}
+
+async function markRecalledInNewAio(item: HTMLElement): Promise<void> {
+  const bubble = findBubbleInNewAio(item);
+  if (bubble) await markRecalled(bubble);
 }
 
 async function markRecalled(container: HTMLElement): Promise<void> {

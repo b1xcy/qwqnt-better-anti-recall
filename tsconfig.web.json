@@ -3,6 +3,7 @@
   "include": [
     "src/renderer/**/*",
     "src/preload/**/*",
+    "src/shared/**/*",
     "src/global.d.ts"
   ],
   "compilerOptions": {
