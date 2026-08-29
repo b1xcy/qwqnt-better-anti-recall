@@ -11,6 +11,8 @@ interface AntiRecallConfig {
   enableNapcatRkey: boolean;
   napcatRkeyUrl: string;
   napcatRkeyToken: string;
+  enableVideoPreDownload: boolean;
+  videoPreDownloadMaxSizeMB: number;
 }
 
 const packageJson = {
@@ -33,6 +35,8 @@ const DEFAULT_CONFIG: AntiRecallConfig = {
   enableNapcatRkey: false,
   napcatRkeyUrl: "",
   napcatRkeyToken: "",
+  enableVideoPreDownload: true,
+  videoPreDownloadMaxSizeMB: 50,
 };
 
 let recalledIds: string[] = [];
@@ -166,6 +170,26 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
                   </div>
                 </setting-item>
               </div>
+
+              <setting-item data-direction="row">
+                <div style="width:90%;">
+                  <setting-text>自动预下载新视频（防撤回未点开的视频）</setting-text>
+                  <span class="secondary-text">开启后，新收到的视频会在到达几秒后自动下载到本地；这样即使被撤回也能完整播放。仅下载小于阈值的视频，修改阈值立即生效。注意：会消耗额外流量与磁盘空间。</span>
+                </div>
+                <div id="switchVideoPreDownload" class="q-switch">
+                  <span class="q-switch__handle"></span>
+                </div>
+              </setting-item>
+
+              <setting-item id="videoPreDownloadSub" data-direction="row">
+                <div>
+                  <h2>预下载大小阈值</h2>
+                  <span class="secondary-text">超过此大小的视频不自动预下载（撤回后只能看封面）；填 0 表示不限制大小。修改将自动保存并立即生效。</span>
+                </div>
+                <div style="width:30%;pointer-events: auto;margin-left:10px;">
+                  <input id="videoPreDownloadMaxSize" min="0" max="99999" maxlength="5" class="text_color path-input" style="width:65%;" type="number" value="${currentConfig.videoPreDownloadMaxSizeMB ?? 50}"/>MB
+                </div>
+              </setting-item>
             </setting-list>
           </setting-panel>
         </setting-section>
@@ -450,6 +474,43 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
       await window.anti_recall.saveConfig(currentConfig);
     });
   }
+
+  const switchVideoPreDownload = menu.querySelector<HTMLElement>(
+    "#switchVideoPreDownload",
+  );
+  const videoPreDownloadSub = menu.querySelector<HTMLElement>(
+    "#videoPreDownloadSub",
+  );
+  if (switchVideoPreDownload && videoPreDownloadSub) {
+    setSwitchActive(
+      switchVideoPreDownload,
+      currentConfig.enableVideoPreDownload !== false,
+    );
+    videoPreDownloadSub.classList.toggle(
+      "hidden",
+      currentConfig.enableVideoPreDownload === false,
+    );
+    switchVideoPreDownload.addEventListener("click", async () => {
+      const next = !switchVideoPreDownload.classList.contains("is-active");
+      setSwitchActive(switchVideoPreDownload, next);
+      currentConfig.enableVideoPreDownload = next;
+      videoPreDownloadSub.classList.toggle("hidden", !next);
+      await window.anti_recall.saveConfig(currentConfig);
+    });
+  }
+
+  const videoPreDownloadMaxSize = menu.querySelector<HTMLInputElement>(
+    "#videoPreDownloadMaxSize",
+  );
+  videoPreDownloadMaxSize?.addEventListener("blur", async () => {
+    const v = Number.parseFloat(videoPreDownloadMaxSize.value);
+    if (Number.isNaN(v) || v < 0 || v > 99999) {
+      alert("你的阈值输入有误！将不会保存，请重新输入");
+      return;
+    }
+    currentConfig.videoPreDownloadMaxSizeMB = v;
+    await window.anti_recall.saveConfig(currentConfig);
+  });
 
   const switchNapcatRkey = menu.querySelector<HTMLElement>("#switchNapcatRkey");
   const napcatRkeyCfg = menu.querySelector<HTMLElement>("#napcatRkeyCfg");

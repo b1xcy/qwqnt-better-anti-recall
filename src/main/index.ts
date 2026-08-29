@@ -11,6 +11,7 @@ import {
   restoreForKernel,
 } from "./videoMedia";
 import { CH, CH_MAIN } from "../shared/channels";
+import { createVideoPreloader } from "./videoPreloader";
 
 interface AntiRecallConfig {
   mainColor: string;
@@ -25,6 +26,10 @@ interface AntiRecallConfig {
   enableNapcatRkey: boolean;
   napcatRkeyUrl: string;
   napcatRkeyToken: string;
+  /** 新视频到达时自动预下载（防撤回未点开的视频） */
+  enableVideoPreDownload: boolean;
+  /** 单文件大小上限（MB），超过不预下载；0 表示不限制 */
+  videoPreDownloadMaxSizeMB: number;
 }
 
 interface StorageStatus {
@@ -690,9 +695,25 @@ const DEFAULT_CONFIG: AntiRecallConfig = {
   enableNapcatRkey: false,
   napcatRkeyUrl: "",
   napcatRkeyToken: "",
+  enableVideoPreDownload: true,
+  videoPreDownloadMaxSizeMB: 50,
 };
 
 let config: AntiRecallConfig = { ...DEFAULT_CONFIG };
+
+/**
+ * 视频预下载器：新视频到达时替用户提前触发内核下载。
+ * 通道与信封形状见 videoPreloader.ts 头注释。
+ */
+const videoPreloader = createVideoPreloader({
+  debugLog,
+  isEnabled: () => config.enableVideoPreDownload === true,
+  maxBytes: () => {
+    // 0 表示不限制大小
+    const mb = Math.floor(config.videoPreDownloadMaxSizeMB ?? 50);
+    return mb <= 0 ? 0 : mb * 1024 * 1024;
+  },
+});
 
 const jsonStore = new JsonShardStore({
   dir: shardDir,
@@ -730,6 +751,8 @@ function normalizeConfig(raw: Partial<AntiRecallConfig> | null): AntiRecallConfi
   if (!(out.deleteMsgCountPerTime > 0))
     out.deleteMsgCountPerTime = DEFAULT_CONFIG.deleteMsgCountPerTime;
   return out;
+  if (!(out.videoPreDownloadMaxSizeMB >= 0))
+    out.videoPreDownloadMaxSizeMB = DEFAULT_CONFIG.videoPreDownloadMaxSizeMB;
 }
 
 function readConfig(): AntiRecallConfig {
@@ -1048,6 +1071,7 @@ function patchWindow(win: BrowserWindow): void {
                 : [payloadWrapper.payload.msgRecord];
             for (const msg of list) {
               const msgId = String(msg.msgId);
+              videoPreloader.handleMsg(msg);
               let idx = msgFlowCache.findIndex((x) => x.id === msgId);
               if (idx === -1) {
                 msgFlowCache.push({ id: msgId, sender: msg.peerUid, msg });
@@ -1281,12 +1305,26 @@ async function init(): Promise<void> {
   // 提前建索引/迁移，别等第一条撤回来了才做。
   if (config.saveDb) await jsonStore.init();
 
-  (qwqnt as any).main.hooks.whenBrowserWindowCreated.peek((w: BrowserWindow) =>
-    patchWindow(w),
-  );
+  (qwqnt as any).main.hooks.whenBrowserWindowCreated.peek((w: BrowserWindow) => {
+    patchWindow(w);
+    videoPreloader.attach(w);
+  });
   for (const w of BrowserWindow.getAllWindows()) {
-    if (w && !w.isDestroyed()) patchWindow(w);
+    if (w && !w.isDestroyed()) {
+      patchWindow(w);
+      videoPreloader.attach(w);
+    }
   }
+  // 窗口内部 '-ipc-message' 监听器是懒注册的，周期性补挂（幂等）
+  setInterval(function () {
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (w && !w.isDestroyed()) {
+        try {
+          videoPreloader.attach(w);
+        } catch (e) {}
+      }
+    }
+  }, 5000);
 }
 
 void init();
