@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/qwqnt-community/types/main/plugin.schema.json",
   "name": "qwqnt-better-anti-recall",
-  "version": "0.5.0",
+  "version": "0.6.2",
   "description": "防止 QQNT 撤回消息的 QwQNT 插件（基于 LiteLoaderQQNT-Anti-Recall 迁移）",
   "type": "module",
   "scripts": {

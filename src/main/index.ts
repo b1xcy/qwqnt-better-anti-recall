@@ -26,6 +26,12 @@ interface AntiRecallConfig {
   enableNapcatRkey: boolean;
   napcatRkeyUrl: string;
   napcatRkeyToken: string;
+  /** 从 SnowLuma 获取 RKey（NapCat 之外的第二来源） */
+  enableSnowlumaRkey: boolean;
+  snowlumaRkeyUrl: string;
+  snowlumaPassword: string;
+  /** 留空则自动从 /api/qq-list 取第一个账号 */
+  snowlumaUin: string;
   /** 新视频到达时自动预下载（防撤回未点开的视频） */
   enableVideoPreDownload: boolean;
   /** 单文件大小上限（MB），超过不预下载；0 表示不限制 */
@@ -44,8 +50,6 @@ interface RKeyData {
   expired_time: number;
 }
 
-const RKEY_SERVERS = ["https://llob.linyuchen.net/rkey"];
-
 function normalizeRkey(raw: string | undefined | null): string {
   if (!raw) return "";
   let v = raw.trim();
@@ -62,7 +66,10 @@ async function netFetch(url: string, opts?: RequestInit): Promise<Response> {
 }
 
 class RKeyManager {
-  private servers: string[];
+  private snowlumaSource: { url: string; password: string; uin: string } | null =
+    null;
+  private snowlumaCredential = "";
+  private snowlumaCredentialExpire = 0;
   private cachePath: string | null = null;
   private rkeyData: RKeyData = {
     group_rkey: "",
@@ -74,10 +81,214 @@ class RKeyManager {
   private napcatCredentialExpire: number = 0;
   private readonly NAPCAT_CREDENTIAL_TTL = 3600; // WebUI Credential 有效期 1 小时
 
-  constructor(servers: string[], opts?: { cachePath?: string }) {
-    this.servers = servers.length > 0 ? servers : RKEY_SERVERS;
+  constructor(opts?: { cachePath?: string }) {
     if (opts?.cachePath) this.cachePath = opts.cachePath;
     this.loadCache();
+  }
+
+  setSnowlumaSource(url: string, password: string, uin: string): void {
+    const trimmed = url.trim().replace(/\/+$/, "");
+    this.snowlumaSource =
+      trimmed ? { url: trimmed, password, uin: uin.trim() } : null;
+    if (this.snowlumaSource) {
+      debugLog("[RKeyManager] snowluma source set:", this.snowlumaSource.url);
+      // 源变了，旧凭据作废
+      this.snowlumaCredential = "";
+      this.snowlumaCredentialExpire = 0;
+    } else {
+      debugLog("[RKeyManager] snowluma source disabled");
+    }
+  }
+
+  // 登录 SnowLuma WebUI，换取 Bearer Token
+  private async snowlumaLogin(): Promise<string> {
+    const src = this.snowlumaSource;
+    if (!src) throw new Error("snowluma source not configured");
+    const res = await netFetch(`${src.url}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: src.password }),
+    });
+    if (!res.ok)
+      throw new Error(`snowluma login http ${res.status} ${res.statusText}`);
+    const body = (await res.json()) as any;
+    // 响应形状未公开文档化，按常见位置取 token
+    const token =
+      body?.data?.token ??
+      body?.data?.Credential ??
+      body?.data?.credential ??
+      body?.token ??
+      body?.credential ??
+      body?.Authorization ??
+      "";
+    if (typeof token !== "string" || !token) {
+      throw new Error(
+        `snowluma login failed: ${safeStringify(body).slice(0, 300)}`,
+      );
+    }
+    this.snowlumaCredential = token;
+    this.snowlumaCredentialExpire = Date.now() / 1000 + 3600;
+    debugLog("[RKeyManager] snowluma login ok");
+    return token;
+  }
+
+  private async snowlumaAuthorizedFetch(
+    path: string,
+    init: RequestInit,
+  ): Promise<any> {
+    const src = this.snowlumaSource;
+    if (!src) throw new Error("snowluma source not configured");
+    let credential = this.snowlumaCredential;
+    if (
+      !credential ||
+      Date.now() / 1000 >= this.snowlumaCredentialExpire
+    ) {
+      credential = await this.snowlumaLogin();
+    }
+    const doFetch = (cred: string) =>
+      netFetch(`${src.url}${path}`, {
+        ...init,
+        headers: {
+          ...(init.headers ?? {}),
+          Authorization: `Bearer ${cred}`,
+        },
+      });
+    let res = await doFetch(credential);
+    // 凭据失效则重登一次
+    if (res.status === 401 || res.status === 403) {
+      this.snowlumaCredential = "";
+      credential = await this.snowlumaLogin();
+      res = await doFetch(credential);
+    }
+    if (!res.ok)
+      throw new Error(
+        `snowluma ${path} http ${res.status} ${res.statusText}`,
+      );
+    return (await res.json()) as any;
+  }
+
+  // 从任意 JSON 里递归收集 uin（qq-list 的响应形状未文档化）
+  private collectUins(body: any, out: string[] = []): string[] {
+    if (out.length > 20) return out;
+    if (typeof body === "string") {
+      if (/^\d{5,12}$/.test(body)) out.push(body);
+      return out;
+    }
+    if (Array.isArray(body)) {
+      for (const x of body) this.collectUins(x, out);
+      return out;
+    }
+    if (body && typeof body === "object") {
+      for (const k of Object.keys(body)) {
+        if (/^(uin|qq|userId|user_id)$/i.test(k)) {
+          const v = body[k];
+          if (typeof v === "string" || typeof v === "number") {
+            out.push(String(v));
+            continue;
+          }
+        }
+        this.collectUins(body[k], out);
+      }
+    }
+    return out;
+  }
+
+  // 用给定地址/密码/账号测试 SnowLuma 源（不改变实例状态）
+  async testSnowlumaSource(
+    url: string,
+    password: string,
+    uin: string,
+  ): Promise<{ ok: boolean; data?: RKeyData; error?: string }> {
+    const prevSource = this.snowlumaSource;
+    const prevCredential = this.snowlumaCredential;
+    const prevCredentialExpire = this.snowlumaCredentialExpire;
+    this.snowlumaSource =
+      url.trim().replace(/\/+$/, "")
+        ? { url: url.trim().replace(/\/+$/, ""), password, uin: uin.trim() }
+        : null;
+    this.snowlumaCredential = "";
+    this.snowlumaCredentialExpire = 0;
+    try {
+      const data = await this.fetchSnowlumaRkey();
+      return { ok: true, data };
+    } catch (e) {
+      return { ok: false, error: (e as Error)?.message ?? String(e) };
+    } finally {
+      this.snowlumaSource = prevSource;
+      this.snowlumaCredential = prevCredential;
+      this.snowlumaCredentialExpire = prevCredentialExpire;
+    }
+  }
+
+  private async fetchSnowlumaRkey(): Promise<RKeyData> {
+    const src = this.snowlumaSource;
+    if (!src) throw new Error("snowluma source not configured");
+
+    // 拿 uin：配置里填了就用，否则从 qq-list 取第一个
+    let uin = src.uin;
+    if (!uin) {
+      const listBody = await this.snowlumaAuthorizedFetch("/api/qq-list", {
+        method: "GET",
+      });
+      const uins = this.collectUins(listBody);
+      if (uins.length === 0) {
+        throw new Error(
+          `snowluma qq-list 没有可用账号: ${safeStringify(listBody).slice(0, 300)}`,
+        );
+      }
+      uin = uins[0];
+    }
+
+    const body = await this.snowlumaAuthorizedFetch("/api/debug/invoke", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        uin,
+        action: "get_rkey_server",
+        params: {},
+      }),
+    });
+
+    // 响应形状防御性解析：
+    //  A. { status, data: [ {rkey, type, ttl, time} ] }（type 10=private 20=group）
+    //  B. { data: { group_rkey, private_rkey, expired_time } }
+    //  C. 顶层直接是 {group_rkey, private_rkey}
+    const list = Array.isArray(body?.data)
+      ? body.data
+      : Array.isArray(body?.data?.data)
+        ? body.data.data
+        : null;
+    if (list) {
+      const privateItem = list.find((i: any) => i?.type === 10);
+      const groupItem = list.find((i: any) => i?.type === 20);
+      const anyItem = list[0];
+      const expired = Math.min(
+        ...list.map((i: any) => Number(i?.time ?? 0) + Number(i?.ttl ?? 0)),
+      );
+      const groupRkey = normalizeRkey(
+        groupItem?.rkey ?? privateItem?.rkey ?? anyItem?.rkey ?? "",
+      );
+      const privateRkey = normalizeRkey(
+        privateItem?.rkey ?? groupItem?.rkey ?? anyItem?.rkey ?? "",
+      );
+      if (!groupRkey && !privateRkey) {
+        throw new Error(`snowluma rkey 列表为空: ${safeStringify(body).slice(0, 300)}`);
+      }
+      return { group_rkey: groupRkey, private_rkey: privateRkey, expired_time: expired };
+    }
+    const d = body?.data ?? body;
+    const groupRkey = normalizeRkey(d?.group_rkey ?? d?.groupRkey ?? "");
+    const privateRkey = normalizeRkey(d?.private_rkey ?? d?.privateRkey ?? "");
+    if (!groupRkey && !privateRkey) {
+      throw new Error(
+        `snowluma rkey 响应无法解析: ${safeStringify(body).slice(0, 300)}`,
+      );
+    }
+    return {
+      group_rkey: groupRkey,
+      private_rkey: privateRkey,
+      expired_time: Number(d?.expired_time ?? 0),
+    };
   }
 
   setNapcatSource(url: string, token: string): void {
@@ -275,28 +486,22 @@ class RKeyManager {
         debugLog("[RKeyManager] napcat source failed:", e);
       }
     }
-    for (const server of this.servers) {
+    // 其次从 SnowLuma 获取
+    if (this.snowlumaSource) {
       try {
-        const data = await this.fetchServerRkey(server);
-        this.rkeyData = {
-          group_rkey: normalizeRkey(data.group_rkey),
-          private_rkey: normalizeRkey(data.private_rkey),
-          expired_time: data.expired_time ?? 0,
-        };
+        const data = await this.fetchSnowlumaRkey();
+        this.rkeyData = { ...data };
         this.saveCache();
-        debugLog("[RKeyManager] refreshed rkey from server:", server);
+        debugLog(
+          "[RKeyManager] refreshed rkey from snowluma:",
+          this.snowlumaSource.url,
+        );
         return;
       } catch (e) {
-        debugLog("[RKeyManager] server failed:", server, e);
+        debugLog("[RKeyManager] snowluma source failed:", e);
       }
     }
     throw new Error("all rkey sources failed");
-  }
-
-  private async fetchServerRkey(server: string): Promise<RKeyData> {
-    const res = await netFetch(server);
-    if (!res.ok) throw new Error(res.statusText);
-    return (await res.json()) as RKeyData;
   }
 }
 
@@ -304,7 +509,7 @@ const LEGACY_IMAGE_ORIGIN = "https://gchat.qpic.cn";
 const NT_IMAGE_ORIGIN = "https://multimedia.nt.qq.com.cn";
 
 class ImageDownloader {
-  private rkeyManager = new RKeyManager(RKEY_SERVERS, {
+  private rkeyManager = new RKeyManager({
     cachePath: rkeyCachePath,
   });
   private saveToDataDir: string | null = null;
@@ -322,11 +527,23 @@ class ImageDownloader {
     this.rkeyManager.setNapcatSource(url, token);
   }
 
+  setSnowlumaSource(url: string, password: string, uin: string): void {
+    this.rkeyManager.setSnowlumaSource(url, password, uin);
+  }
+
   async testNapcatRkey(
     url: string,
     token: string,
   ): Promise<{ ok: boolean; data?: RKeyData; error?: string }> {
     return await this.rkeyManager.testNapcatSource(url, token);
+  }
+
+  async testSnowlumaRkey(
+    url: string,
+    password: string,
+    uin: string,
+  ): Promise<{ ok: boolean; data?: RKeyData; error?: string }> {
+    return await this.rkeyManager.testSnowlumaSource(url, password, uin);
   }
 
   captureRkey(groupRkey: string, privateRkey: string): void {
@@ -695,6 +912,10 @@ const DEFAULT_CONFIG: AntiRecallConfig = {
   enableNapcatRkey: false,
   napcatRkeyUrl: "",
   napcatRkeyToken: "",
+  enableSnowlumaRkey: false,
+  snowlumaRkeyUrl: "http://127.0.0.1:5099",
+  snowlumaPassword: "",
+  snowlumaUin: "",
   enableVideoPreDownload: true,
   videoPreDownloadMaxSizeMB: 50,
 };
@@ -1243,6 +1464,11 @@ function registerIpcHandlers(): void {
         config.enableNapcatRkey ? config.napcatRkeyUrl : "",
         config.enableNapcatRkey ? config.napcatRkeyToken : "",
       );
+      imageDownloader.setSnowlumaSource(
+        config.enableSnowlumaRkey ? config.snowlumaRkeyUrl : "",
+        config.snowlumaPassword,
+        config.snowlumaUin,
+      );
       broadcast(CH_MAIN.repatchCss);
 
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
@@ -1253,6 +1479,13 @@ function registerIpcHandlers(): void {
     CH.testNapcatRkey,
     async (_event, url: string, token: string) => {
       return await imageDownloader.testNapcatRkey(url, token);
+    },
+  );
+
+  ipcMain.handle(
+    CH.testSnowlumaRkey,
+    async (_event, url: string, password: string, uin: string) => {
+      return await imageDownloader.testSnowlumaRkey(url, password, uin);
     },
   );
 
@@ -1300,6 +1533,11 @@ async function init(): Promise<void> {
   imageDownloader.setNapcatSource(
     config.enableNapcatRkey ? config.napcatRkeyUrl : "",
     config.enableNapcatRkey ? config.napcatRkeyToken : "",
+  );
+  imageDownloader.setSnowlumaSource(
+    config.enableSnowlumaRkey ? config.snowlumaRkeyUrl : "",
+    config.snowlumaPassword,
+    config.snowlumaUin,
   );
   registerIpcHandlers();
   // 提前建索引/迁移，别等第一条撤回来了才做。

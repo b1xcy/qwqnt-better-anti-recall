@@ -13,6 +13,10 @@ interface AntiRecallConfig {
   napcatRkeyToken: string;
   enableVideoPreDownload: boolean;
   videoPreDownloadMaxSizeMB: number;
+  enableSnowlumaRkey: boolean;
+  snowlumaRkeyUrl: string;
+  snowlumaPassword: string;
+  snowlumaUin: string;
 }
 
 const packageJson = {
@@ -35,6 +39,10 @@ const DEFAULT_CONFIG: AntiRecallConfig = {
   enableNapcatRkey: false,
   napcatRkeyUrl: "",
   napcatRkeyToken: "",
+  enableSnowlumaRkey: false,
+  snowlumaRkeyUrl: "http://127.0.0.1:5099",
+  snowlumaPassword: "",
+  snowlumaUin: "",
   enableVideoPreDownload: true,
   videoPreDownloadMaxSizeMB: 50,
 };
@@ -225,6 +233,49 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
                   </div>
                 </div>
               </setting-item>
+
+              <setting-item data-direction="row">
+                <div style="width:90%;">
+                  <setting-text>从 SnowLuma 获取 RKey</setting-text>
+                  <span class="secondary-text">开启后通过 SnowLuma 的 /api/debug/invoke 获取 RKey；登录密码留空表示无密码。账号留空则自动取第一个在线账号。</span>
+                </div>
+                <div id="switchSnowlumaRkey" class="q-switch">
+                  <span class="q-switch__handle"></span>
+                </div>
+              </setting-item>
+
+              <setting-item id="snowlumaRkeyCfg" data-direction="column" class="hidden">
+                <div style="width:100%;">
+                  <setting-item data-direction="row">
+                    <div style="width:35%;">
+                      <label for="snowlumaRkeyUrl">SnowLuma 地址</label>
+                    </div>
+                    <div style="width:65%;pointer-events: auto;">
+                      <input id="snowlumaRkeyUrl" class="anti-recall-rkey__input" type="text" placeholder="http://127.0.0.1:5099" value="${currentConfig.snowlumaRkeyUrl ?? "http://127.0.0.1:5099"}"/>
+                    </div>
+                  </setting-item>
+                  <setting-item data-direction="row">
+                    <div style="width:35%;">
+                      <label for="snowlumaPassword">登录密码</label>
+                    </div>
+                    <div style="width:65%;pointer-events: auto;">
+                      <input id="snowlumaPassword" class="anti-recall-rkey__input" type="password" placeholder="留空表示无密码" value="${currentConfig.snowlumaPassword ?? ""}"/>
+                    </div>
+                  </setting-item>
+                  <setting-item data-direction="row">
+                    <div style="width:35%;">
+                      <label for="snowlumaUin">指定账号 UIN</label>
+                    </div>
+                    <div style="width:65%;pointer-events: auto;">
+                      <input id="snowlumaUin" class="anti-recall-rkey__input" type="text" placeholder="留空自动选择第一个账号" value="${currentConfig.snowlumaUin ?? ""}"/>
+                    </div>
+                  </setting-item>
+                  <div class="anti-recall-rkey__actions">
+                    <button id="testSnowlumaRkey" class="anti-recall-rkey__button" type="button">测试连接</button>
+                    <span id="snowlumaRkeyTestResult" class="anti-recall-rkey__result" hidden></span>
+                  </div>
+                </div>
+              </setting-item>
             </setting-list>
           </setting-panel>
         </setting-section>
@@ -372,9 +423,11 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
     await window.anti_recall.clearDb();
   });
 
-  menu.querySelector<HTMLButtonElement>("#viewRecalled")?.addEventListener("click", () => {
-    window.anti_recall.openRecallViewer();
-  });
+  menu
+    .querySelector<HTMLButtonElement>("#viewRecalled")
+    ?.addEventListener("click", () => {
+      window.anti_recall.openRecallViewer();
+    });
 
   const maxMsgLimit = menu.querySelector<HTMLInputElement>("#maxMsgLimit");
   maxMsgLimit?.addEventListener("blur", async () => {
@@ -542,6 +595,92 @@ async function renderSettings(container: HTMLDivElement): Promise<void> {
     currentConfig.napcatRkeyToken = napcatRkeyTokenInput.value.trim();
     await window.anti_recall.saveConfig(currentConfig);
   });
+
+  const switchSnowlumaRkey = menu.querySelector<HTMLElement>(
+    "#switchSnowlumaRkey",
+  );
+  const snowlumaRkeyCfg = menu.querySelector<HTMLElement>("#snowlumaRkeyCfg");
+  if (switchSnowlumaRkey && snowlumaRkeyCfg) {
+    setSwitchActive(
+      switchSnowlumaRkey,
+      currentConfig.enableSnowlumaRkey === true,
+    );
+    snowlumaRkeyCfg.classList.toggle(
+      "hidden",
+      currentConfig.enableSnowlumaRkey !== true,
+    );
+    switchSnowlumaRkey.addEventListener("click", async () => {
+      const next = !switchSnowlumaRkey.classList.contains("is-active");
+      setSwitchActive(switchSnowlumaRkey, next);
+      currentConfig.enableSnowlumaRkey = next;
+      snowlumaRkeyCfg.classList.toggle("hidden", !next);
+      await window.anti_recall.saveConfig(currentConfig);
+    });
+  }
+
+  const snowlumaRkeyUrlInput =
+    menu.querySelector<HTMLInputElement>("#snowlumaRkeyUrl");
+  snowlumaRkeyUrlInput?.addEventListener("blur", async () => {
+    currentConfig.snowlumaRkeyUrl = snowlumaRkeyUrlInput.value.trim();
+    await window.anti_recall.saveConfig(currentConfig);
+  });
+
+  const snowlumaPasswordInput =
+    menu.querySelector<HTMLInputElement>("#snowlumaPassword");
+  snowlumaPasswordInput?.addEventListener("blur", async () => {
+    currentConfig.snowlumaPassword = snowlumaPasswordInput.value;
+    await window.anti_recall.saveConfig(currentConfig);
+  });
+
+  const snowlumaUinInput = menu.querySelector<HTMLInputElement>("#snowlumaUin");
+  snowlumaUinInput?.addEventListener("blur", async () => {
+    currentConfig.snowlumaUin = snowlumaUinInput.value.trim();
+    await window.anti_recall.saveConfig(currentConfig);
+  });
+
+  const testSnowlumaBtn =
+    menu.querySelector<HTMLButtonElement>("#testSnowlumaRkey");
+  const testSnowlumaResult = menu.querySelector<HTMLElement>(
+    "#snowlumaRkeyTestResult",
+  );
+  if (testSnowlumaBtn && testSnowlumaResult) {
+    testSnowlumaBtn.addEventListener("click", async () => {
+      const url = snowlumaRkeyUrlInput?.value.trim() ?? "";
+      const password = snowlumaPasswordInput?.value ?? "";
+      const uin = snowlumaUinInput?.value.trim() ?? "";
+      testSnowlumaBtn.disabled = true;
+      testSnowlumaResult.hidden = false;
+      testSnowlumaResult.className = "anti-recall-rkey__result";
+      testSnowlumaResult.textContent = "测试中...";
+      try {
+        const ret = await window.anti_recall.testSnowlumaRkey(
+          url,
+          password,
+          uin,
+        );
+        console.log("[Anti-Recall] snowluma rkey test result:", ret);
+        if (ret.ok && ret.data) {
+          const d = ret.data;
+          const expire =
+            d.expired_time > 0
+              ? new Date(d.expired_time * 1000).toLocaleString()
+              : "未知";
+          testSnowlumaResult.classList.add("anti-recall-rkey__result--ok");
+          testSnowlumaResult.textContent = `连接成功 ✓\nprivate: ${d.private_rkey}\ngroup: ${d.group_rkey}\n过期: ${expire}`;
+        } else {
+          testSnowlumaResult.classList.add("anti-recall-rkey__result--error");
+          testSnowlumaResult.textContent = `测试失败: ${ret.error ?? "未知错误"}`;
+        }
+      } catch (e) {
+        console.error("[Anti-Recall] snowluma rkey test error:", e);
+        testSnowlumaResult.classList.add("anti-recall-rkey__result--error");
+        testSnowlumaResult.textContent = `测试异常: ${String(e)}`;
+      } finally {
+        testSnowlumaBtn.disabled = false;
+        testSnowlumaResult.style.whiteSpace = "pre-wrap";
+      }
+    });
+  }
 
   const testNapcatBtn =
     menu.querySelector<HTMLButtonElement>("#testNapcatRkey");
@@ -918,7 +1057,10 @@ async function markRecalledById(msgId: string): Promise<void> {
   if (item) await markRecalledInNewAio(item);
 }
 
-async function markForwardedMessage(node: HTMLElement, msgId: string): Promise<void> {
+async function markForwardedMessage(
+  node: HTMLElement,
+  msgId: string,
+): Promise<void> {
   const bubble =
     (node.matches(".forward-msg") || node.matches(".multi-forward-msg")
       ? node
@@ -964,7 +1106,9 @@ function findBubbleInNewAio(item: HTMLElement): HTMLElement | null {
   }
 
   // 再兜一层：message-container 里排除头像和时间戳，取第一个有实际尺寸的块。
-  const container = item.querySelector<HTMLElement>("[class*='message-container']");
+  const container = item.querySelector<HTMLElement>(
+    "[class*='message-container']",
+  );
   for (const child of container?.children ?? []) {
     const cls = (child.className || "").toString();
     if (/avatar|timestamp|checkbox|multi-select/i.test(cls)) continue;
@@ -1001,7 +1145,10 @@ async function markRecalled(container: HTMLElement): Promise<void> {
   if (container.classList.contains("message-content__wrapper")) {
     container.classList.add("message-content-recalled-parent");
   } else {
-    container.classList.add("message-content-recalled-parent", "recalledNoMargin");
+    container.classList.add(
+      "message-content-recalled-parent",
+      "recalledNoMargin",
+    );
   }
 
   if (currentConfig.enableTip === true) {

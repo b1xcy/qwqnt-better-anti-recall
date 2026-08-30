@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('anti_recall', {
   saveConfig: (newConfig: unknown) => ipcRenderer.invoke(CH.saveConfig, newConfig),
   testNapcatRkey: (url: string, token: string) =>
     ipcRenderer.invoke(CH.testNapcatRkey, url, token),
+  testSnowlumaRkey: (url: string, password: string, uin: string) =>
+    ipcRenderer.invoke(CH.testSnowlumaRkey, url, password, uin),
 
   repatchCss: (callback: () => void) => ipcRenderer.on(CH_MAIN.repatchCss, callback),
   recallTip: (callback: (_event: unknown, msgId: string) => void) =>

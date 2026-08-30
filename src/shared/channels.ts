@@ -24,6 +24,7 @@ export const CH = {
   getStorageStatus: `${NS}.getStorageStatus`,
   saveConfig: `${NS}.saveConfig`,
   testNapcatRkey: `${NS}.testNapcatRkey`,
+  testSnowlumaRkey: `${NS}.testSnowlumaRkey`,
 } as const;
 
 /** 主进程 → 渲染层（webContents.send）。 */
