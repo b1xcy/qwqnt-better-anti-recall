@@ -960,11 +960,15 @@ async function markRecalledInView(): Promise<void> {
           count: forwardedNodes.length,
           classes: [...forwardedNodes].map((node) => node.className),
         });
-        await markForwardedMessage(forwardedNodes[0], id);
       }
 
-      if (forward) {
-        await markForwardedMessage(forward, id);
+      // 只标一个节点。`forward` 是按 id/data-id 精确命中的那层，
+      // `forwardedNodes[0]` 是文档序最外层的宽松匹配，两者常常不是同一个元素；
+      // 以前两条都标，外层和内层各挂一份阴影，看起来就是双层。
+      const forwardTarget = forward ?? forwardedNodes[0] ?? null;
+
+      if (forwardTarget) {
+        await markForwardedMessage(forwardTarget, id);
       } else if (a) {
         if (a.classList.contains("gray-tip-message")) continue;
         await markRecalled(a);
@@ -1126,6 +1130,14 @@ async function markRecalledInNewAio(item: HTMLElement): Promise<void> {
 
 async function markRecalled(container: HTMLElement): Promise<void> {
   if (!container) return;
+
+  // 阴影是挂在 message-content-recalled-parent 上的，同一条消息只能有一层。
+  // 实时路径（markRecalledById）和补扫路径（markRecalledInView）挑中的节点未必
+  // 是同一层——转发消息尤其容易一个外层一个内层——所以这里按祖先/后代查重，
+  // 光靠 classList 判自己不够。
+  if (container.parentElement?.closest(".message-content-recalled-parent"))
+    return;
+  if (container.querySelector(".message-content-recalled-parent")) return;
 
   const existingTips = container.querySelectorAll<HTMLElement>(
     ":scope > .message-content-recalled",
